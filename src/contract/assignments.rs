@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -32,7 +32,7 @@ use rgb::{
 };
 use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 /// Trait used by contract state. Unlike [`ExposedState`] it doesn't allow
 /// concealment of the state, i.e. may contain incomplete data without blinding
@@ -59,7 +59,7 @@ impl KnownState for RevealedData {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -73,7 +73,7 @@ pub struct WitnessInfo {
 #[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Copy, Clone, Eq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

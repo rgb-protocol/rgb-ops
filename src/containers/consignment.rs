@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -46,7 +46,7 @@ use super::{
     ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
 use crate::persistence::{MemContract, MemContractState};
-use crate::{SecretSeal, LIB_NAME_RGB_STD};
+use crate::{SecretSeal, LIB_NAME_RGB_OPS};
 
 pub type Transfer = Consignment<true>;
 pub type Contract = Consignment<false>;
@@ -82,7 +82,7 @@ impl<C: ConsignmentExt> ConsignmentExt for &C {
 #[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
 #[wrapper(Deref, BorrowSlice, Hex, Index, RangeOps)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 pub struct ConsignmentId(
     #[from]
     #[from([u8; 32])]
@@ -162,7 +162,7 @@ impl<const TRANSFER: bool> Deref for ValidConsignment<TRANSFER> {
 #[derive(Clone, Debug, Display)]
 #[display(AsciiArmor::to_ascii_armored_string)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode, PartialEq)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -37,7 +37,7 @@ use super::{
 use crate::containers::{Contract, Kit, Transfer};
 use crate::persistence::{MemIndex, MemStash, MemState};
 use crate::stl::ProofOfReserves;
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
@@ -49,14 +49,14 @@ pub const LIB_ID_RGB_STORAGE: &str =
 pub const LIB_ID_RGB_CONTRACT: &str =
     "stl:1uyMC~lT-xPK57Lr-IgIhB0r-WxYd9io-2wZav_s-6TbR4LY#nuclear-liquid-sonic";
 
-/// Strict types id for the library representing of RGB StdLib data types.
-pub const LIB_ID_RGB_STD: &str =
+/// Strict types id for the library representing of RGB Ops data types.
+pub const LIB_ID_RGB_OPS: &str =
     "stl:r1GC~anx-KuJPTuL-5BZ9qof-J2NY2~T-FTYiA6F-Abtg4uU#stick-tornado-absorb";
 
-fn _rgb_std_stl() -> Result<TypeLib, Box<CompileError>> {
+fn _rgb_ops_stl() -> Result<TypeLib, Box<CompileError>> {
     // TODO: wait for fix in strict_types to use LibBuilder::with
     #[allow(deprecated)]
-    Ok(LibBuilder::new(libname!(LIB_NAME_RGB_STD), [
+    Ok(LibBuilder::new(libname!(LIB_NAME_RGB_OPS), [
         std_stl().to_dependency(),
         strict_types_stl().to_dependency(),
         commit_verify_stl().to_dependency(),
@@ -105,7 +105,7 @@ fn _rgb_storage_stl() -> Result<TypeLib, Box<CompileError>> {
         aluvm_stl().to_dependency(),
         rgb_commit_stl().to_dependency(),
         rgb_logic_stl().to_dependency(),
-        rgb_std_stl().to_dependency(),
+        rgb_ops_stl().to_dependency(),
     ])
     .transpile::<MemIndex>()
     .transpile::<MemState>()
@@ -113,8 +113,8 @@ fn _rgb_storage_stl() -> Result<TypeLib, Box<CompileError>> {
     .compile()?)
 }
 
-/// Generates strict type library representation of RGB StdLib data types.
-pub fn rgb_std_stl() -> TypeLib { _rgb_std_stl().expect("invalid strict type RGBStd library") }
+/// Generates strict type library representation of RGB Ops data types.
+pub fn rgb_ops_stl() -> TypeLib { _rgb_ops_stl().expect("invalid strict type RGBOps library") }
 
 /// Generates strict type library providing standard data types which may be
 /// used in RGB smart contracts.
@@ -170,8 +170,8 @@ mod test {
 
     #[test]
     fn std_lib_id() {
-        let lib = rgb_std_stl();
-        assert_eq!(lib.id().to_string(), LIB_ID_RGB_STD);
+        let lib = rgb_ops_stl();
+        assert_eq!(lib.id().to_string(), LIB_ID_RGB_OPS);
     }
 
     #[test]

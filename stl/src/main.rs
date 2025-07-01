@@ -27,7 +27,7 @@ use commit_verify::CommitmentLayout;
 use rgbstd::containers::Transfer;
 use rgbstd::stl::{
     aluvm_stl, bp_consensus_stl, bp_core_stl, bp_tx_stl, commit_verify_stl, rgb_commit_stl,
-    rgb_contract_stl, rgb_logic_stl, rgb_std_stl, rgb_storage_stl,
+    rgb_contract_stl, rgb_logic_stl, rgb_ops_stl, rgb_storage_stl,
 };
 use strict_types::stl::{std_stl, strict_types_stl};
 use strict_types::{parse_args, StlFormat, SystemBuilder};
@@ -58,21 +58,21 @@ fn main() {
         )
         .expect("unable to write to the file");
 
-    let rgb_std = rgb_std_stl();
-    rgb_std
+    let rgb_ops = rgb_ops_stl();
+    rgb_ops
         .serialize(StlFormat::Binary, Some(&dir), "0.11.0", None)
         .expect("unable to write to the file");
-    rgb_std
+    rgb_ops
         .serialize(StlFormat::Armored, Some(&dir), "0.11.0", None)
         .expect("unable to write to the file");
-    rgb_std
+    rgb_ops
         .serialize(
             StlFormat::Source,
             Some(&dir),
             "0.11.0",
             Some(
                 "
-  Description: RGB standard library
+  Description: RGB ops library
   Author: Dr Maxim Orlovsky <orlovsky@lnp-bp.org>
   Copyright (C) 2023-2024 LNP/BP Standards Association. All rights reserved.
   License: Apache-2.0",
@@ -103,7 +103,7 @@ fn main() {
         .expect("unable to write to the file");
 
     let std = std_stl();
-    let rgb = rgb_std_stl();
+    let rgb = rgb_ops_stl();
     let rgb_commit = rgb_commit_stl();
     let rgb_logic = rgb_logic_stl();
     let tx = bp_tx_stl();

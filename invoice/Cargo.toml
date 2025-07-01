@@ -1,5 +1,5 @@
 [package]
-name = "rgb-invoice"
+name = "rgb-invoicing"
 version = { workspace = true }
 description = "Invoicing library for RGB smart contracts"
 keywords = { workspace = true }
@@ -23,7 +23,7 @@ strict_encoding = { workspace = true }
 strict_types = { workspace = true }
 bp-core = { workspace = true }
 bp-invoice = { workspace = true }
-rgb-core = { workspace = true }
+rgb-consensus = { workspace = true }
 indexmap = { workspace = true }
 fluent-uri = "0.3.2"
 percent-encoding = "2.3.1"

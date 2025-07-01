@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -34,7 +34,7 @@ use strict_types::{StrictVal, TypeSystem};
 use crate::contract::{AssignmentsFilter, KnownState, OutputAssignment, WitnessInfo};
 use crate::info::ContractInfo;
 use crate::persistence::ContractStateRead;
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 #[derive(Clone, Eq, PartialEq, Debug, Display, Error, From)]
 #[display(doc_comments)]
@@ -45,7 +45,7 @@ pub enum ContractError {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Display, From)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD, tags = custom)]
+#[strict_type(lib = LIB_NAME_RGB_OPS, tags = custom)]
 #[display(inner)]
 #[cfg_attr(
     feature = "serde",

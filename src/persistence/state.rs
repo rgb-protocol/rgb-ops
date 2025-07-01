@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -55,7 +55,7 @@ pub enum StateError<P: StateProvider> {
 
     /// {0}
     ///
-    /// It may happen due to RGB standard library bug, or indicate internal
+    /// It may happen due to RGB ops library bug, or indicate internal
     /// stash inconsistency and compromised stash data storage.
     #[from]
     #[display(doc_comments)]

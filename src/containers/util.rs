@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -25,11 +25,11 @@ use std::iter;
 use amplify::confinement::{NonEmptyOrdSet, U16};
 use rgb::SecretSeal;
 
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display, Default)]
 #[derive(StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD, tags = repr, into_u8, try_from_u8)]
+#[strict_type(lib = LIB_NAME_RGB_OPS, tags = repr, into_u8, try_from_u8)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -48,7 +48,7 @@ pub enum ContainerVer {
 #[wrapper(Deref)]
 #[wrapper_mut(DerefMut)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD, dumb = Self(NonEmptyOrdSet::with(SecretSeal::strict_dumb())))]
+#[strict_type(lib = LIB_NAME_RGB_OPS, dumb = Self(NonEmptyOrdSet::with(SecretSeal::strict_dumb())))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

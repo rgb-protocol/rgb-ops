@@ -1123,9 +1123,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
-name = "rgb-core"
-version = "0.11.1-alpha.3+unreviewed"
-source = "git+https://github.com/zoedberg/rgb-core?branch=0.11.1-4#dcd9d92072b8136149bc892589acb39ec3ba83db"
+name = "rgb-consensus"
+version = "0.11.1-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "523a76741ed93954f5132cede3135e9601aa27fb5eeab0b896f75c4406b88d60"
 dependencies = [
  "aluvm",
  "amplify",
@@ -1144,7 +1145,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rgb-invoice"
+name = "rgb-invoicing"
 version = "0.11.1-alpha.3+unreviewed"
 dependencies = [
  "amplify",
@@ -1156,14 +1157,14 @@ dependencies = [
  "indexmap 2.9.0",
  "percent-encoding",
  "rand 0.9.1",
- "rgb-core",
+ "rgb-consensus",
  "serde",
  "strict_encoding",
  "strict_types",
 ]
 
 [[package]]
-name = "rgb-std"
+name = "rgb-ops"
 version = "0.11.1-alpha.3+unreviewed"
 dependencies = [
  "aluvm",
@@ -1180,8 +1181,8 @@ dependencies = [
  "indexmap 2.9.0",
  "nonasync",
  "rand 0.9.1",
- "rgb-core",
- "rgb-invoice",
+ "rgb-consensus",
+ "rgb-invoicing",
  "serde",
  "strict_encoding",
  "strict_types",
@@ -1195,7 +1196,7 @@ version = "0.11.1-alpha.3+unreviewed"
 dependencies = [
  "amplify",
  "commit_verify",
- "rgb-std",
+ "rgb-ops",
  "strict_types",
 ]
 

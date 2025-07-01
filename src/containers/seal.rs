@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -19,21 +19,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![doc = include_str!("seals.md")]
-
 use bp::seals::txout::{BlindSeal, CloseMethod, SealTxid};
 use bp::secp256k1::rand::{thread_rng, RngCore};
 use bp::Vout;
 use rgb::{GraphSeal, SecretSeal, TxoSeal};
 
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 /// Seal definition which re-uses witness transaction id of some other seal,
 /// which is not known at the moment of seal construction. Thus, the definition
 /// has only information about output number.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, From)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -79,7 +79,7 @@ pub enum StockError<
     #[display(doc_comments)]
     /// {0}
     ///
-    /// It may happen due to RGB standard library bug, or indicate internal
+    /// It may happen due to RGB ops library bug, or indicate internal
     /// stash inconsistency and compromised stash data storage.
     StashInconsistency(StashInconsistency),
 
@@ -87,7 +87,7 @@ pub enum StockError<
     #[display(doc_comments)]
     /// state for contract {0} is not known.
     ///
-    /// It may happen due to RGB standard library bug, or indicate internal
+    /// It may happen due to RGB ops library bug, or indicate internal
     /// stash inconsistency and compromised stash data storage.
     StateInconsistency(StateInconsistency),
 
@@ -95,7 +95,7 @@ pub enum StockError<
     #[display(doc_comments)]
     /// {0}
     ///
-    /// It may happen due to RGB standard library bug, or indicate internal
+    /// It may happen due to RGB ops library bug, or indicate internal
     /// stash inconsistency and compromised stash data storage.
     IndexInconsistency(IndexInconsistency),
 

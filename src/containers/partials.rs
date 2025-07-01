@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -26,14 +26,14 @@ use strict_encoding::{
 };
 
 use super::SealWitness;
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 /// A batch of state transitions under different contracts which are associated
 /// with some specific transfer and will be anchored within a single layer 1
 /// transaction.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -72,7 +72,7 @@ impl Batch {
 /// bundles, and anchored to a single layer 1 transaction.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[derive(StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

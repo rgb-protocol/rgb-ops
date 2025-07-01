@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -29,7 +29,7 @@ use rgb::validation::{DbcProof, EAnchor};
 use rgb::{BundleId, DiscloseHash, TransitionBundle};
 use strict_encoding::StrictDumb;
 
-use crate::{MergeReveal, MergeRevealError, LIB_NAME_RGB_STD};
+use crate::{MergeReveal, MergeRevealError, LIB_NAME_RGB_OPS};
 
 /// Error merging two [`SealWitness`]es.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Display, Error, From)]
@@ -51,7 +51,7 @@ pub enum SealWitnessMergeError {
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -134,7 +134,7 @@ impl MergeReveal for PubWitness {
 
 #[derive(Clone, Eq, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD, tags = custom, dumb = Self::Txid(strict_dumb!()))]
+#[strict_type(lib = LIB_NAME_RGB_OPS, tags = custom, dumb = Self::Txid(strict_dumb!()))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -181,7 +181,7 @@ impl PubWitness {
 
 #[derive(Clone, Eq, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

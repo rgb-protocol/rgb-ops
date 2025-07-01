@@ -1,4 +1,4 @@
-// RGB standard library for working with smart contracts on Bitcoin & Lightning
+// RGB ops library for working with smart contracts on Bitcoin & Lightning
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -36,7 +36,7 @@ use strict_types::TypeSystem;
 
 use super::{ASCII_ARMOR_SCHEMA, ASCII_ARMOR_SCRIPT, ASCII_ARMOR_TYPE_SYSTEM, ASCII_ARMOR_VERSION};
 use crate::containers::ContainerVer;
-use crate::LIB_NAME_RGB_STD;
+use crate::LIB_NAME_RGB_OPS;
 
 /// Kit identifier.
 ///
@@ -44,7 +44,7 @@ use crate::LIB_NAME_RGB_STD;
 #[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
 #[wrapper(Deref, BorrowSlice, Hex, Index, RangeOps)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 pub struct KitId(
     #[from]
     #[from([u8; 32])]
@@ -109,7 +109,7 @@ impl Deref for ValidKit {
 #[derive(Clone, Default, Debug, Display, PartialEq)]
 #[display(AsciiArmor::to_ascii_armored_string)]
 #[derive(StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD)]
+#[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
