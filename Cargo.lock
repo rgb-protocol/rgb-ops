@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "rgb-invoicing"
-version = "0.11.1-alpha.3+unreviewed"
+version = "0.11.1-rc.1"
 dependencies = [
  "amplify",
  "baid64",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "rgb-ops"
-version = "0.11.1-alpha.3+unreviewed"
+version = "0.11.1-rc.1"
 dependencies = [
  "aluvm",
  "amplify",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "rgb-stl"
-version = "0.11.1-alpha.3+unreviewed"
+version = "0.11.1-rc.1"
 dependencies = [
  "amplify",
  "commit_verify",
