@@ -1131,7 +1131,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rgb-consensus"
 version = "0.11.1-rc.4"
-source = "git+https://github.com/rgb-protocol/rgb-consensus?branch=master#98e3dc9f6e672cc7a1ebfa30300ae41c4a818c78"
+source = "git+https://github.com/rgb-protocol/rgb-consensus?branch=master#ce524b1c1715d7b894c07799c05e757d68971c76"
 dependencies = [
  "aluvm",
  "amplify",

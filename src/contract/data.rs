@@ -252,11 +252,11 @@ impl<S: ContractStateRead> ContractData<S> {
         self.state
             .global(type_id)
             .expect("cannot find type ID in global state")
-            .map(|data| {
+            .map(|entry| {
                 self.types
                     .strict_deserialize_type(
                         global_details.global_state_schema.sem_id,
-                        data.borrow().as_slice(),
+                        entry.borrow().data().as_slice(),
                     )
                     .expect("unvalidated contract data in stash")
                     .unbox()

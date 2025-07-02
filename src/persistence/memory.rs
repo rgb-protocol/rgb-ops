@@ -20,11 +20,10 @@
 // limitations under the License.
 
 use std::borrow::Borrow;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::fmt::{Debug, Formatter};
-use std::{iter, mem};
+use std::rc::Rc;
 
 use aluvm::library::{Lib, LibId};
 use amplify::confinement::{
@@ -37,8 +36,8 @@ use commit_verify::{CommitId, Conceal};
 use nonasync::persistence::{CloneNoPersistence, Persistence, PersistenceError, Persisting};
 use rgb::validation::DbcProof;
 use rgb::vm::{
-    ContractStateAccess, ContractStateEvolve, GlobalContractState, GlobalOrd, GlobalStateIter,
-    OrdOpRef, UnknownGlobalStateType, WitnessOrd,
+    ContractStateAccess, ContractStateEvolve, GlobalOrd, GlobalStateEntry, GlobalsIter, OrdOpRef,
+    UnknownGlobalStateType, WitnessOrd,
 };
 use rgb::{
     Assign, AssignmentType, Assignments, AssignmentsRef, BundleId, ContractId, ExposedSeal,
@@ -637,93 +636,80 @@ impl<M: Borrow<MemContractState>> Debug for MemContract<M> {
     }
 }
 
+struct MemGlobalStateAccess {
+    values: Vec<Rc<GlobalStateEntry>>,
+    last_idx: Option<u24>,
+}
+
+impl MemGlobalStateAccess {
+    fn new(items: impl Iterator<Item = (GlobalOrd, RevealedData)>, limit: u24) -> Self {
+        let mut values = items
+            .take(limit.to_usize())
+            .map(|(ord, data)| GlobalStateEntry::new(ord, data))
+            .map(Rc::new)
+            .collect::<Vec<_>>();
+        values.sort();
+        values.reverse();
+        Self {
+            values,
+            last_idx: None,
+        }
+    }
+}
+
+impl Iterator for MemGlobalStateAccess {
+    type Item = Rc<GlobalStateEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(last_idx) = self.last_idx.as_mut() {
+            *last_idx += u24::ONE;
+        } else {
+            self.last_idx = Some(u24::ZERO);
+        }
+        self.values.get(self.last_idx?.into_usize()).map(Rc::clone)
+    }
+
+    #[inline]
+    fn count(self) -> usize { self.values.len() }
+}
+
+impl GlobalsIter for MemGlobalStateAccess {
+    fn at_depth(&self, depth: usize) -> Option<Self::Item> {
+        let depth = u24::try_from(depth as u32).ok()?;
+        let entry = self.values.get(depth.to_usize())?;
+        Some(Rc::clone(entry))
+    }
+}
+
 impl<M: Borrow<MemContractState>> ContractStateAccess for MemContract<M> {
     fn global(
         &self,
         ty: GlobalStateType,
-    ) -> Result<GlobalContractState<impl GlobalStateIter>, UnknownGlobalStateType> {
-        type Src<'a> = &'a BTreeMap<GlobalOut, RevealedData>;
-        type FilteredIter<'a> = Box<dyn Iterator<Item = (GlobalOrd, &'a RevealedData)> + 'a>;
-        struct Iter<'a> {
-            src: Src<'a>,
-            iter: FilteredIter<'a>,
-            last: Option<(GlobalOrd, &'a RevealedData)>,
-            depth: u24,
-            constructor: Box<dyn Fn(Src<'a>) -> FilteredIter<'a> + 'a>,
-        }
-        impl<'a> Iter<'a> {
-            fn swap(&mut self) -> FilteredIter<'a> {
-                let mut iter = (self.constructor)(self.src);
-                mem::swap(&mut iter, &mut self.iter);
-                iter
-            }
-        }
-        impl<'a> GlobalStateIter for Iter<'a> {
-            type Data = &'a RevealedData;
-            fn size(&mut self) -> u24 {
-                let iter = self.swap();
-                // TODO: Consuming iterator just to count items is highly inefficient, but I do
-                //       not know any other way of computing this value
-                let size = iter.count();
-                u24::try_from(size as u32).expect("iterator size must fit u24 due to `take` limit")
-            }
-            fn prev(&mut self) -> Option<(GlobalOrd, Self::Data)> {
-                self.last = self.iter.next();
-                self.depth += u24::ONE;
-                self.last()
-            }
-            fn last(&mut self) -> Option<(GlobalOrd, Self::Data)> { self.last }
-            fn reset(&mut self, depth: u24) {
-                match self.depth.cmp(&depth) {
-                    Ordering::Less => {
-                        let mut iter = Box::new(iter::empty()) as FilteredIter;
-                        mem::swap(&mut self.iter, &mut iter);
-                        self.iter = Box::new(iter.skip(depth.to_usize() - depth.to_usize()))
-                    }
-                    Ordering::Equal => {}
-                    Ordering::Greater => {
-                        let iter = self.swap();
-                        self.iter = Box::new(iter.skip(depth.to_usize()));
-                    }
-                }
-            }
-        }
-        // We need this due to the limitations of the rust compiler to enforce lifetimes
-        // on closures
-        fn constrained<'a, F: Fn(Src<'a>) -> FilteredIter<'a>>(f: F) -> F { f }
-
+    ) -> Result<impl GlobalsIter<Item = impl Borrow<GlobalStateEntry>>, UnknownGlobalStateType>
+    {
         let state = self
             .unfiltered
             .borrow()
             .global
             .get(&ty)
             .ok_or(UnknownGlobalStateType(ty))?;
-
-        let constructor = constrained(move |src: Src<'_>| -> FilteredIter<'_> {
-            Box::new(
-                src.iter()
-                    .rev()
-                    .filter_map(|(out, data)| {
-                        let ord = match out.op_witness {
-                            OpWitness::Genesis => GlobalOrd::genesis(out.index),
-                            OpWitness::Transition(id, ty) => {
-                                let ord = self.filter.get(&id)?;
-                                GlobalOrd::transition(out.opid, out.index, ty, out.nonce, *ord)
-                            }
-                        };
-                        Some((ord, data))
-                    })
-                    .take(state.limit.to_usize()),
-            )
-        });
-        let iter = Iter {
-            src: state.known.as_unconfined(),
-            iter: constructor(state.known.as_unconfined()),
-            depth: u24::ZERO,
-            last: None,
-            constructor: Box::new(constructor),
-        };
-        Ok(GlobalContractState::new(iter))
+        let items = state
+            .known
+            .as_unconfined()
+            .iter()
+            .rev()
+            .filter_map(|(out, data)| {
+                let ord = match out.op_witness {
+                    OpWitness::Genesis => GlobalOrd::genesis(out.index),
+                    OpWitness::Transition(id, ty) => {
+                        // skip globals for which we don't have a WitnessOrd
+                        let ord = self.filter.get(&id)?;
+                        GlobalOrd::transition(out.opid, out.index, ty, out.nonce, *ord)
+                    }
+                };
+                Some((ord, data.to_owned()))
+            });
+        Ok(MemGlobalStateAccess::new(items, state.limit))
     }
 
     fn rights(&self, outpoint: Outpoint, ty: AssignmentType) -> u32 {
