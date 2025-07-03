@@ -11,7 +11,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1-rc.1"
+version = "0.11.1-rc.2"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -67,7 +67,7 @@ strict_types = { workspace = true }
 commit_verify = { workspace = true }
 bp-core = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1-rc.1", path = "invoice" }
+rgb-invoicing = { version = "0.11.1-rc.2", path = "invoice" }
 aluvm = "0.11.1-alpha.2"
 base85 = "=2.0.0"
 chrono = "0.4.38"
