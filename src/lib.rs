@@ -50,6 +50,7 @@ pub use invoice::{Allocation, Amount, CoinAmount, OwnedFraction, Precision, Toke
 pub use rgb::prelude::*;
 pub use rgb::rgbasm;
 pub use stl::{LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_OPS, LIB_NAME_RGB_STORAGE};
+pub use strict_types::TypeSystem;
 
 /// BIP32 derivation index for outputs which may contain assigned RGB state.
 pub const RGB_NATIVE_DERIVATION_INDEX: u32 = 9;
