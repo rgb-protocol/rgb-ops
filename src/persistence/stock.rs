@@ -1196,6 +1196,16 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         Ok(UpdateRes { succeeded, failed })
     }
 
+    pub fn upsert_witness(
+        &mut self,
+        witness_id: Txid,
+        witness_ord: WitnessOrd,
+    ) -> Result<(), StockError<S, H, P>> {
+        self.store_transaction(move |_stash, state, _index| {
+            Ok(state.upsert_witness(witness_id, witness_ord)?)
+        })
+    }
+
     fn _check_bundle_history(
         &self,
         bundle_id: &BundleId,
