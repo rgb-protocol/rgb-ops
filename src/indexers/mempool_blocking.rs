@@ -19,21 +19,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bp::{Tx, Txid};
+use bp::Txid;
 use esplora::{BlockingClient, Config, Error};
-use rgbcore::vm::WitnessOrd;
+use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::ChainNet;
 
-use super::RgbResolver;
+use crate::indexers::esplora_blocking::EsploraClient;
 
-#[derive(Clone, Debug)]
-/// Represents a client for interacting with a mempool.
-// Currently, this client is wrapping an `esplora::BlockingClient` instance.
-// If the mempool service changes in the future and is not compatible with
-// esplora::BlockingClient, Only the internal implementation needs to be
-// modified
+/// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
+/// It assumes that mempool.space exposes the same APIs as esplora.
+// Currently, this client is wrapping an `crate::indexers::esplora_blocking::EsploraClient`
+// instance. If the mempool service changes in the future and is not compatible with
+// esplora::BlockingClient, only the internal implementation needs to be modified.
 pub struct MemPoolClient {
-    inner: BlockingClient,
+    inner: EsploraClient,
 }
 
 impl MemPoolClient {
@@ -50,22 +49,20 @@ impl MemPoolClient {
     /// successful, or an `Error` if an error occurred.
     #[allow(clippy::result_large_err)]
     pub fn new(url: &str, config: Config) -> Result<Self, Error> {
-        let inner = BlockingClient::from_config(url, config)?;
+        let inner = EsploraClient {
+            inner: BlockingClient::from_config(url, config)?,
+        };
         Ok(MemPoolClient { inner })
     }
 }
 
-impl RgbResolver for MemPoolClient {
-    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), String> {
+impl ResolveWitness for MemPoolClient {
+    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), WitnessResolverError> {
         self.inner.check_chain_net(chain_net)
     }
 
-    fn resolve_pub_witness_ord(&self, txid: Txid) -> Result<WitnessOrd, String> {
-        self.inner.resolve_pub_witness_ord(txid)
-    }
-
-    fn resolve_pub_witness(&self, txid: Txid) -> Result<Option<Tx>, String> {
-        self.inner.resolve_pub_witness(txid)
+    fn resolve_witness(&self, txid: Txid) -> Result<WitnessStatus, WitnessResolverError> {
+        self.inner.resolve_witness(txid)
     }
 }
 
@@ -79,7 +76,7 @@ mod test {
         let txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
             .parse()
             .unwrap();
-        let status = client.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1231006505));
     }
@@ -93,7 +90,7 @@ mod test {
         let txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
             .parse()
             .unwrap();
-        let status = client.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1296688602));
     }
@@ -106,7 +103,7 @@ mod test {
         let txid = "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"
             .parse()
             .unwrap();
-        let status = client.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1714777860));
     }
@@ -120,6 +117,7 @@ mod test {
             .parse()
             .unwrap();
         let tx = client
+            .inner
             .inner
             .tx(&txid)
             .expect("Failed to get tx")

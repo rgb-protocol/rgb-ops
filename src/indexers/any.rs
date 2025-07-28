@@ -24,51 +24,48 @@
 use std::collections::HashMap;
 
 use bp::{Tx, Txid};
-use rgbcore::validation::{ResolveWitness, WitnessResolverError};
+use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::WitnessOrd;
 use rgbcore::ChainNet;
 
 use crate::containers::Consignment;
 
-// We need to repeat methods of `WitnessResolve` trait here to avoid making
-// wrappers around resolver types. TODO: Use wrappers instead
-pub trait RgbResolver: Send {
-    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), String>;
-    fn resolve_pub_witness(&self, txid: Txid) -> Result<Option<Tx>, String>;
-    fn resolve_pub_witness_ord(&self, txid: Txid) -> Result<WitnessOrd, String>;
-}
-
-/// Type that contains any of the [`Resolver`] types defined by the library
+/// Generic struct wrapping any implementation of the [`ResolveWitness`] trait.
+/// It also contains a map of the [`Consignment`] TXs, non-empty if `add_consignment_txes` has been
+/// called.
 #[derive(From)]
 #[non_exhaustive]
 pub struct AnyResolver {
-    inner: Box<dyn RgbResolver>,
+    inner: Box<dyn ResolveWitness>,
     consignment_txes: HashMap<Txid, Tx>,
 }
 
 impl AnyResolver {
+    /// Return an [`AnyResolver`] wrapping an [`super::electrum_blocking::ElectrumClient`].
     #[cfg(feature = "electrum_blocking")]
     pub fn electrum_blocking(url: &str, config: Option<electrum::Config>) -> Result<Self, String> {
         Ok(AnyResolver {
-            inner: Box::new(
-                electrum::Client::from_config(url, config.unwrap_or_default())
+            inner: Box::new(super::electrum_blocking::ElectrumClient {
+                inner: electrum::Client::from_config(url, config.unwrap_or_default())
                     .map_err(|e| e.to_string())?,
-            ),
+            }),
             consignment_txes: Default::default(),
         })
     }
 
+    /// Return an [`AnyResolver`] wrapping an [`super::esplora_blocking::EsploraClient`].
     #[cfg(feature = "esplora_blocking")]
     pub fn esplora_blocking(url: &str, config: Option<esplora::Config>) -> Result<Self, String> {
         Ok(AnyResolver {
-            inner: Box::new(
-                esplora::BlockingClient::from_config(url, config.unwrap_or_default())
+            inner: Box::new(super::esplora_blocking::EsploraClient {
+                inner: esplora::BlockingClient::from_config(url, config.unwrap_or_default())
                     .map_err(|e| e.to_string())?,
-            ),
+            }),
             consignment_txes: Default::default(),
         })
     }
 
+    /// Return an [`AnyResolver`] wrapping a [`super::mempool_blocking::MemPoolClient`].
     #[cfg(feature = "mempool_blocking")]
     pub fn mempool_blocking(url: &str, config: Option<esplora::Config>) -> Result<Self, String> {
         Ok(AnyResolver {
@@ -96,33 +93,15 @@ impl AnyResolver {
 }
 
 impl ResolveWitness for AnyResolver {
-    fn resolve_pub_witness(&self, witness_id: Txid) -> Result<Tx, WitnessResolverError> {
+    fn resolve_witness(&self, witness_id: Txid) -> Result<WitnessStatus, WitnessResolverError> {
         if let Some(tx) = self.consignment_txes.get(&witness_id) {
-            return Ok(tx.clone());
+            Ok(WitnessStatus::Resolved(tx.clone(), WitnessOrd::Tentative))
+        } else {
+            self.inner.resolve_witness(witness_id)
         }
-
-        self.inner
-            .resolve_pub_witness(witness_id)
-            .map_err(|e| WitnessResolverError::Other(witness_id, e))
-            .and_then(|r| r.ok_or(WitnessResolverError::Unknown(witness_id)))
-    }
-
-    fn resolve_pub_witness_ord(
-        &self,
-        witness_id: Txid,
-    ) -> Result<WitnessOrd, WitnessResolverError> {
-        if self.consignment_txes.contains_key(&witness_id) {
-            return Ok(WitnessOrd::Tentative);
-        }
-
-        self.inner
-            .resolve_pub_witness_ord(witness_id)
-            .map_err(|e| WitnessResolverError::Other(witness_id, e))
     }
 
     fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), WitnessResolverError> {
-        self.inner
-            .check_chain_net(chain_net)
-            .map_err(|_| WitnessResolverError::WrongChainNet)
+        self.inner.check_chain_net(chain_net)
     }
 }

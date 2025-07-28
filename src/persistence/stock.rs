@@ -30,7 +30,7 @@ use amplify::confinement::{Confined, LargeOrdSet};
 use bp::dbc::{Anchor, Proof};
 use bp::{Outpoint, Txid};
 use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
-use rgb::validation::{ResolveWitness, UnsafeHistoryMap, WitnessResolverError};
+use rgb::validation::{ResolveWitness, UnsafeHistoryMap, WitnessOrdProvider, WitnessResolverError};
 use rgb::vm::WitnessOrd;
 use rgb::{
     validation, AssignmentType, BundleId, ChainNet, ContractId, GraphSeal, Identity,
@@ -922,10 +922,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     ///
     /// Must be called before the consignment is created, when witness
     /// transaction is not yet mined.
-    pub fn consume_fascia<R: ResolveWitness>(
+    pub fn consume_fascia<WP: WitnessOrdProvider>(
         &mut self,
         fascia: Fascia,
-        resolver: R,
+        witness_ord_provider: WP,
     ) -> Result<(), StockError<S, H, P, FasciaError>> {
         self.store_transaction(move |stash, state, index| {
             let witness_id = fascia.witness_id();
@@ -937,7 +937,12 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                     .map_err(|_| FasciaError::InvalidBundle(contract_id, bundle.bundle_id()))?;
 
                 index.index_bundle(contract_id, &bundle, witness_id)?;
-                state.update_from_bundle(contract_id, &bundle, witness_id, &resolver)?;
+                state.update_from_bundle(
+                    contract_id,
+                    &bundle,
+                    witness_id,
+                    &witness_ord_provider,
+                )?;
                 stash.consume_bundle(bundle)?;
             }
             Ok(())
@@ -1087,8 +1092,9 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         became_valid_witnesses: &mut BTreeMap<Txid, BTreeSet<BundleId>>,
     ) -> Result<(), StockError<S, H, P>> {
         let new = resolver
-            .resolve_pub_witness_ord(*id)
-            .map_err(|e| StockError::WitnessUnresolved(*id, e))?;
+            .resolve_witness(*id)
+            .map_err(|e| StockError::WitnessUnresolved(*id, e))?
+            .witness_ord();
         let changed = *ord != new;
         if changed {
             let bundle_valid = match (*ord, new) {

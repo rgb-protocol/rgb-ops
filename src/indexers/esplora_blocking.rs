@@ -21,48 +21,56 @@
 
 use std::num::NonZeroU32;
 
-use bp::{Tx, Txid};
+use bp::Txid;
 use esplora::BlockingClient;
-pub use esplora::{Builder, Config, Error};
+pub use esplora::{Builder, Config};
+use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
 use rgbcore::ChainNet;
 
-use super::RgbResolver;
+/// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
+pub struct EsploraClient {
+    pub inner: BlockingClient,
+}
 
-impl RgbResolver for BlockingClient {
-    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), String> {
+impl ResolveWitness for EsploraClient {
+    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), WitnessResolverError> {
         // check the esplora server is for the correct network
-        let block_hash = self.block_hash(0)?;
+        let block_hash = self
+            .inner
+            .block_hash(0)
+            .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?;
         if chain_net.genesis_block_hash() != block_hash {
-            return Err(s!("resolver is for a network different from the wallet's one"));
+            return Err(WitnessResolverError::WrongChainNet);
         }
         Ok(())
     }
 
-    fn resolve_pub_witness_ord(&self, txid: Txid) -> Result<WitnessOrd, String> {
-        if self.tx(&txid)?.is_none() {
-            return Ok(WitnessOrd::Archived);
-        }
-        let status = self.tx_status(&txid)?;
+    fn resolve_witness(&self, txid: Txid) -> Result<WitnessStatus, WitnessResolverError> {
+        let Some(tx) = self
+            .inner
+            .tx(&txid)
+            .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?
+        else {
+            return Ok(WitnessStatus::Unresolved);
+        };
+        let status = self
+            .inner
+            .tx_status(&txid)
+            .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?;
         let ord = match status
             .block_height
             .and_then(|h| status.block_time.map(|t| (h, t)))
         {
             Some((h, t)) => {
-                let height = NonZeroU32::new(h).ok_or(Error::InvalidServerData)?;
+                let height = NonZeroU32::new(h).ok_or(WitnessResolverError::InvalidResolverData)?;
                 WitnessOrd::Mined(
-                    WitnessPos::bitcoin(height, t as i64).ok_or(Error::InvalidServerData)?,
+                    WitnessPos::bitcoin(height, t as i64)
+                        .ok_or(WitnessResolverError::InvalidResolverData)?,
                 )
             }
             None => WitnessOrd::Tentative,
         };
-        Ok(ord)
-    }
-
-    fn resolve_pub_witness(&self, txid: Txid) -> Result<Option<Tx>, String> {
-        self.tx(&txid).or_else(|e| match e {
-            Error::TransactionNotFound(_) => Ok(None),
-            e => Err(e.to_string()),
-        })
+        Ok(WitnessStatus::Resolved(tx, ord))
     }
 }

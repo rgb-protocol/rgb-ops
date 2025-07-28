@@ -28,4 +28,4 @@ pub mod electrum_blocking;
 #[cfg(feature = "mempool_blocking")]
 pub mod mempool_blocking;
 
-pub use any::{AnyResolver, RgbResolver};
+pub use any::AnyResolver;

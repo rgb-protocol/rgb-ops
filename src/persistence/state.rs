@@ -25,7 +25,7 @@ use std::fmt::Debug;
 
 use amplify::confinement::{LargeOrdMap, LargeOrdSet};
 use nonasync::persistence::{CloneNoPersistence, Persisting};
-use rgb::validation::{ResolveWitness, WitnessResolverError};
+use rgb::validation::{ResolveWitness, WitnessOrdProvider, WitnessResolverError};
 use rgb::vm::{ContractStateAccess, WitnessOrd};
 use rgb::{
     BundleId, ContractId, Genesis, KnownTransition, RevealedData, RevealedValue, Schema, SchemaId,
@@ -139,12 +139,12 @@ impl<P: StateProvider> State<P> {
         }
     }
 
-    pub fn update_from_bundle<R: ResolveWitness>(
+    pub fn update_from_bundle<WP: WitnessOrdProvider>(
         &mut self,
         contract_id: ContractId,
         bundle: &TransitionBundle,
         witness_id: Txid,
-        resolver: R,
+        witness_ord_provider: &WP,
     ) -> Result<(), StateError<P>> {
         let mut updater = self
             .as_provider_mut()
@@ -153,8 +153,8 @@ impl<P: StateProvider> State<P> {
             .ok_or(StateInconsistency::UnknownContract(contract_id))?;
         let bundle_id = bundle.bundle_id();
         for KnownTransition { transition, .. } in &bundle.known_transitions {
-            let ord = resolver
-                .resolve_pub_witness_ord(witness_id)
+            let ord = witness_ord_provider
+                .witness_ord(witness_id)
                 .map_err(|e| StateError::Resolver(witness_id, e))?;
             updater
                 .add_transition(transition, witness_id, ord, bundle_id)
@@ -178,8 +178,9 @@ impl<P: StateProvider> State<P> {
             for KnownTransition { transition, .. } in &bundle.known_transitions {
                 let witness_id = witness_bundle.pub_witness.to_witness_id();
                 let witness_ord = resolver
-                    .resolve_pub_witness_ord(witness_id)
-                    .map_err(|e| StateError::Resolver(witness_id, e))?;
+                    .resolve_witness(witness_id)
+                    .map_err(|e| StateError::Resolver(witness_id, e))?
+                    .witness_ord();
 
                 state
                     .add_transition(transition, witness_id, witness_ord, bundle_id)
