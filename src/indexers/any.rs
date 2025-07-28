@@ -36,7 +36,7 @@ use crate::containers::Consignment;
 #[derive(From)]
 #[non_exhaustive]
 pub struct AnyResolver {
-    inner: Box<dyn ResolveWitness>,
+    inner: Box<dyn ResolveWitness + Send>,
     consignment_txes: HashMap<Txid, Tx>,
 }
 
