@@ -251,11 +251,11 @@ impl ContractBuilder {
             bundles: none!(),
             schema,
 
-            types,
+            types: types.clone(),
             scripts,
         };
 
-        let valid_contract = contract.validate(&DumbResolver, self.chain_net, None)?;
+        let valid_contract = contract.validate(&DumbResolver, self.chain_net, None, types)?;
 
         Ok(valid_contract)
     }

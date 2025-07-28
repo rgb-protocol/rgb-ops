@@ -299,8 +299,9 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         resolver: &impl ResolveWitness,
         chain_net: ChainNet,
         safe_height: Option<NonZeroU32>,
+        trusted_typesystem: TypeSystem,
     ) -> Result<ValidConsignment<TRANSFER>, validation::Status> {
-        self.validate_with_opids(resolver, chain_net, safe_height, bset![])
+        self.validate_with_opids(resolver, chain_net, safe_height, trusted_typesystem, bset![])
     }
 
     pub fn validate_with_opids(
@@ -308,6 +309,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         resolver: &impl ResolveWitness,
         chain_net: ChainNet,
         safe_height: Option<NonZeroU32>,
+        trusted_typesystem: TypeSystem,
         trusted_op_seals: BTreeSet<OpId>,
     ) -> Result<ValidConsignment<TRANSFER>, validation::Status> {
         let index = IndexedConsignment::new(&self);
@@ -318,6 +320,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             (&self.schema, self.contract_id()),
             safe_height,
             trusted_op_seals,
+            trusted_typesystem,
         );
 
         let validity = status.validity();
