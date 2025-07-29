@@ -33,7 +33,7 @@ strict_types = "2.8.3"
 commit_verify = { version = "0.11.1-alpha.2", features = ["stl"] }
 bp-core = { version = "0.11.1-alpha.2", features = ["stl"] }
 bp-invoice = { version = "0.11.1-alpha.2" }
-rgb-consensus = { version = "0.11.1-rc.3", features = ["stl"] }
+rgb-consensus = { version = "0.11.1-rc.4", features = ["stl"] }
 indexmap = "2.4.0"
 serde_crate = { package = "serde", version = "1", features = ["derive"] }
 
@@ -105,6 +105,3 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.docs.rs]
 features = ["all"]
-
-[patch.crates-io]
-rgb-consensus = { git = "https://github.com/rgb-protocol/rgb-consensus", branch = "master" }
