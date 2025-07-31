@@ -32,7 +32,7 @@ use strict_types::{CompileError, LibBuilder, SemId, SymbolicSys, TypeLib, TypeSy
 
 use super::{
     AssetSpec, AttachmentType, BurnMeta, ContractSpec, ContractTerms, EmbeddedMedia, Error,
-    IssueMeta, MediaType, OpidRejectUrl, TokenData, LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STORAGE,
+    IssueMeta, MediaType, RejectListUrl, TokenData, LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STORAGE,
 };
 use crate::containers::{Contract, Kit, Transfer};
 use crate::persistence::{MemIndex, MemStash, MemState};
@@ -47,7 +47,7 @@ pub const LIB_ID_RGB_STORAGE: &str =
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_CONTRACT: &str =
-    "stl:1uyMC~lT-xPK57Lr-IgIhB0r-WxYd9io-2wZav_s-6TbR4LY#nuclear-liquid-sonic";
+    "stl:oKImP6R~-7RZs4n2-EzPPuQP-H59Ol51-aN2GKYC-MgX~z3I#isotope-judo-good";
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
@@ -89,7 +89,7 @@ fn _rgb_contract_stl() -> Result<TypeLib, Box<CompileError>> {
     .transpile::<AttachmentType>()
     .transpile::<TokenData>()
     .transpile::<EmbeddedMedia>()
-    .transpile::<OpidRejectUrl>()
+    .transpile::<RejectListUrl>()
     .compile()?)
 }
 

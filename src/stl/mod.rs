@@ -32,7 +32,7 @@ pub use invoice::LIB_NAME_RGB_CONTRACT;
 pub use mime::{MediaRegName, MediaType};
 pub use specs::{
     Article, AssetSpec, Attachment, AttachmentName, AttachmentType, BurnMeta, ContractSpec,
-    ContractTerms, Details, EmbeddedMedia, IssueMeta, Name, OpidRejectUrl, RicardianContract,
+    ContractTerms, Details, EmbeddedMedia, IssueMeta, Name, RejectListUrl, RicardianContract,
     Ticker, TokenData,
 };
 pub use stl::{

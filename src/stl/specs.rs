@@ -605,16 +605,16 @@ impl TokenData {
     derive(Serialize, Deserialize),
     serde(crate = "serde_crate", transparent)
 )]
-pub struct OpidRejectUrl(RString<AsciiPrintable, AsciiPrintable, 1, 8000>);
+pub struct RejectListUrl(RString<AsciiPrintable, AsciiPrintable, 1, 8000>);
 
-impl StrictSerialize for OpidRejectUrl {}
-impl StrictDeserialize for OpidRejectUrl {}
+impl StrictSerialize for RejectListUrl {}
+impl StrictDeserialize for RejectListUrl {}
 
-impl_ident_type!(OpidRejectUrl);
-impl_ident_subtype!(OpidRejectUrl);
+impl_ident_type!(RejectListUrl);
+impl_ident_subtype!(RejectListUrl);
 
-impl OpidRejectUrl {
+impl RejectListUrl {
     pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
-        OpidRejectUrl::from_str(&value.unwrap_string()).unwrap()
+        RejectListUrl::from_str(&value.unwrap_string()).unwrap()
     }
 }
