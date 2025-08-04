@@ -598,7 +598,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<Contract, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign::<false>(contract_id, [], vec![], None)?;
+        let consignment = self.consign::<false>(contract_id, [], vec![], [], None)?;
         Ok(consignment)
     }
 
@@ -607,9 +607,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         contract_id: ContractId,
         outputs: impl AsRef<[OutputSeal]>,
         secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
     ) -> Result<Transfer, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign(contract_id, outputs, secret_seals, witness_id)?;
+        let consignment = self.consign(contract_id, outputs, secret_seals, opids, witness_id)?;
         Ok(consignment)
     }
 
@@ -715,35 +716,49 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         contract_id: ContractId,
         outputs: impl AsRef<[OutputSeal]>,
         secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
     ) -> Result<Consignment<TRANSFER>, StockError<S, H, P, ConsignError>> {
         let outputs = outputs.as_ref();
         let secret_seals = secret_seals.as_ref();
 
-        // 1. Collect initial set of anchored bundles
-        // 1.1. Get all public outputs
-        let mut opouts = self.index.public_opouts(contract_id)?;
-
-        // 1.2. Add outputs requested by the caller
-        opouts.extend(
+        // Collect initial set of opids to include
+        let mut opids = opids.into_iter().collect::<HashSet<_>>();
+        opids.extend(
             self.index
-                .opouts_by_outputs(contract_id, outputs.iter().copied())?,
-        );
-        opouts.extend(
-            self.index
-                .opouts_by_terminals(secret_seals.iter().copied())?,
+                .public_opouts(contract_id)?
+                .into_iter()
+                .chain(
+                    self.index
+                        .opouts_by_outputs(contract_id, outputs.iter().copied())?,
+                )
+                .chain(
+                    self.index
+                        .opouts_by_terminals(secret_seals.iter().copied())?,
+                )
+                .map(|opout| opout.op),
         );
 
+        self.consign_operations(contract_id, opids, secret_seals, witness_id)
+    }
+
+    fn consign_operations<const TRANSFER: bool>(
+        &self,
+        contract_id: ContractId,
+        opids: impl IntoIterator<Item = OpId>,
+        secret_seals: &[SecretSeal],
+        witness_id: Option<Txid>,
+    ) -> Result<Consignment<TRANSFER>, StockError<S, H, P, ConsignError>> {
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut bundles = BTreeMap::<BundleId, (WitnessBundle, u32)>::new();
         let mut transitions = BTreeMap::<OpId, Transition>::new();
         let mut bundle_sec_seals: BTreeMap<BundleId, BTreeSet<SecretSeal>> = BTreeMap::new();
-        for opout in opouts {
-            if opout.op == contract_id {
+        for opid in opids {
+            if opid == contract_id {
                 continue; // we skip genesis since it will be present anywhere
             }
 
-            let transition = self.transition(opout.op)?;
+            let transition = self.transition(opid)?;
 
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
 
@@ -755,7 +770,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 }
             }
 
-            transitions.insert(opout.op, transition.clone());
+            transitions.insert(opid, transition.clone());
 
             // 1.4. Collect secret seals for this bundle to add to the consignment terminals
             for typed_assignments in transition.assignments.values() {
@@ -1306,7 +1321,7 @@ mod test {
         let contract_id =
             ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                 .unwrap();
-        if let Ok(transfer) = stock.consign::<true>(contract_id, [], vec![secret_seal], None) {
+        if let Ok(transfer) = stock.consign::<true>(contract_id, [], vec![secret_seal], [], None) {
             println!("{transfer:?}")
         }
     }
