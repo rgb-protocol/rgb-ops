@@ -271,8 +271,8 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             schema: self.schema,
             types: self.types,
             genesis: self.genesis,
-            terminals: self.terminals,
-            bundles: self.bundles,
+            terminals: none!(),
+            bundles: none!(),
             scripts: self.scripts,
         }
     }
@@ -327,6 +327,11 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
 
         if self.transfer != TRANSFER {
             status.add_failure(Failure::Custom(s!("invalid consignment type")));
+        }
+        if !self.transfer && (!self.bundles.is_empty() || !self.terminals.is_empty()) {
+            status.add_failure(Failure::Custom(s!(
+                "contract consignment must not contain bundles nor terminals"
+            )));
         }
 
         // check bundle ids listed in terminals are present in the consignment
