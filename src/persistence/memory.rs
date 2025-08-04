@@ -374,11 +374,7 @@ impl StateReadProvider for MemState {
             })
             .map(|(id, ord)| (*id, *ord))
             .collect();
-        Ok(MemContract {
-            filter,
-            invalid_bundles: self.invalid_bundles.clone().release(),
-            unfiltered,
-        })
+        Ok(MemContract::new(filter, self.invalid_bundles.clone().release(), unfiltered))
     }
 
     fn witnesses(&self) -> LargeOrdMap<Txid, WitnessOrd> { self.witnesses.clone() }
@@ -532,7 +528,7 @@ impl MemContractState {
         }
     }
 
-    fn add_operation(&mut self, op: OrdOpRef) {
+    pub(crate) fn add_operation(&mut self, op: OrdOpRef) {
         let opid = op.id();
 
         for (ty, state) in op.globals() {
@@ -619,6 +615,20 @@ pub struct MemContract<M: Borrow<MemContractState> = MemContractState> {
     filter: HashMap<Txid, WitnessOrd>,
     invalid_bundles: BTreeSet<BundleId>,
     unfiltered: M,
+}
+
+impl<M: Borrow<MemContractState>> MemContract<M> {
+    pub(crate) fn new(
+        filter: HashMap<Txid, WitnessOrd>,
+        invalid_bundles: BTreeSet<BundleId>,
+        unfiltered: M,
+    ) -> Self {
+        Self {
+            filter,
+            invalid_bundles,
+            unfiltered,
+        }
+    }
 }
 
 impl<M: Borrow<MemContractState>> Debug for MemContract<M> {

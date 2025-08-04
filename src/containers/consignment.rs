@@ -19,7 +19,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -33,6 +33,7 @@ use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{Failure, ResolveWitness, Validator, Validity, CONSIGNMENT_MAX_LIBS};
+use rgb::vm::OrdOpRef;
 use rgb::{
     impl_serde_baid64, validation, BundleId, ChainNet, ContractId, Genesis, GraphSeal, OpId,
     Operation, Schema, SchemaId, Txid,
@@ -45,6 +46,8 @@ use super::{
     ContainerVer, IndexedConsignment, SecretSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE,
     ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
+use crate::contract::ContractData;
+use crate::info::ContractInfo;
 use crate::persistence::{MemContract, MemContractState};
 use crate::{SecretSeal, LIB_NAME_RGB_OPS};
 
@@ -142,6 +145,21 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
 
     pub fn split(self) -> (Consignment<TRANSFER>, validation::Status) {
         (self.consignment, self.validation_status)
+    }
+
+    /// Return the [`ContractData`] from the consignment.
+    pub fn contract_data(&self) -> ContractData<MemContract> {
+        let mut unfiltered =
+            MemContractState::new(&self.consignment.schema, self.consignment.contract_id());
+        unfiltered.add_operation(OrdOpRef::Genesis(&self.consignment.genesis));
+        let state = MemContract::new(HashMap::new(), BTreeSet::new(), unfiltered);
+        let info = ContractInfo::with(&self.consignment.genesis);
+        ContractData {
+            state,
+            schema: self.consignment.schema.clone(),
+            types: self.consignment.types.clone(),
+            info,
+        }
     }
 }
 
