@@ -1131,8 +1131,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rgb-consensus"
 version = "0.11.1-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ddbe1b97f51fdb00c23db07b8680b7e7753aec3f0ec6984b5501ed041f5b914"
+source = "git+https://github.com/rgb-protocol/rgb-consensus?branch=master#02c713bd72ba6642fae9fa84c1ee6eb49f20650f"
 dependencies = [
  "aluvm",
  "amplify",

@@ -36,7 +36,7 @@ use rgb::validation::{Failure, ResolveWitness, Validator, Validity, CONSIGNMENT_
 use rgb::vm::OrdOpRef;
 use rgb::{
     impl_serde_baid64, validation, BundleId, ChainNet, ContractId, Genesis, GraphSeal, OpId,
-    Operation, Schema, SchemaId, Txid,
+    Operation, Opout, Schema, SchemaId, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{StrictDeserialize, StrictDumb, StrictSerialize};
@@ -137,7 +137,7 @@ pub struct ValidConsignment<const TRANSFER: bool> {
 impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
     pub fn validation_status(&self) -> &validation::Status { &self.validation_status }
 
-    pub fn validated_opids(&self) -> &BTreeSet<OpId> { &self.validation_status.validated_opids }
+    pub fn input_opouts(&self) -> &BTreeSet<Opout> { &self.validation_status.input_opouts }
 
     pub fn into_consignment(self) -> Consignment<TRANSFER> { self.consignment }
 
