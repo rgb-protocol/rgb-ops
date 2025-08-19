@@ -104,7 +104,7 @@ impl<const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'_, TRANSFER> {
 
     fn scripts(&self) -> &Scripts { &self.scripts }
 
-    fn operation(&self, opid: OpId) -> Option<OpRef> {
+    fn operation(&self, opid: OpId) -> Option<OpRef<'_>> {
         if opid == self.genesis.id() {
             return Some(OpRef::Genesis(&self.genesis));
         }

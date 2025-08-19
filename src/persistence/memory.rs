@@ -777,7 +777,7 @@ impl ContractStateEvolve for MemContract<MemContractState> {
     }
 
     fn evolve_state(&mut self, op: OrdOpRef) -> Result<(), Self::Error> {
-        fn writer(me: &mut MemContract<MemContractState>) -> MemContractWriter {
+        fn writer(me: &mut MemContract<MemContractState>) -> MemContractWriter<'_> {
             MemContractWriter {
                 writer: Box::new(
                     |witness_id: Txid, ord: WitnessOrd| -> Result<(), confinement::Error> {
