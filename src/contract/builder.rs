@@ -28,12 +28,11 @@ use amplify::{confinement, Wrapper};
 use chrono::Utc;
 use invoice::Amount;
 use rgb::assignments::AssignVec;
-use rgb::validation::Scripts;
+use rgb::validation::{Scripts, ValidationError};
 use rgb::{
-    validation, Assign, AssignmentType, Assignments, ChainNet, ContractId, ExposedSeal,
-    FungibleType, Genesis, GenesisSeal, GlobalState, GraphSeal, Identity, Layer1, MetadataError,
-    Opout, OwnedStateSchema, RevealedData, RevealedValue, Schema, Transition, TransitionType,
-    TypedAssigns,
+    Assign, AssignmentType, Assignments, ChainNet, ContractId, ExposedSeal, FungibleType, Genesis,
+    GenesisSeal, GlobalState, GraphSeal, Identity, Layer1, MetadataError, Opout, OwnedStateSchema,
+    RevealedData, RevealedValue, Schema, Transition, TransitionType, TypedAssigns,
 };
 use rgbcore::{GlobalStateSchema, GlobalStateType, MetaType, Metadata};
 use strict_encoding::{FieldName, SerializeError, StrictSerialize};
@@ -78,7 +77,7 @@ pub enum BuilderError {
 
     #[from]
     #[display(inner)]
-    ContractInconsistency(validation::Status),
+    ContractInconsistency(ValidationError),
 }
 
 #[derive(Clone, Debug)]

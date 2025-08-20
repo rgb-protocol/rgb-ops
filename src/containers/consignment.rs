@@ -32,7 +32,7 @@ use amplify::{ByteArray, Bytes32};
 use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
-use rgb::validation::{Failure, ResolveWitness, Validator, Validity, CONSIGNMENT_MAX_LIBS};
+use rgb::validation::{Failure, ResolveWitness, ValidationError, Validator, CONSIGNMENT_MAX_LIBS};
 use rgb::vm::OrdOpRef;
 use rgb::{
     impl_serde_baid64, validation, BundleId, ChainNet, ContractId, Genesis, GraphSeal, OpId,
@@ -318,7 +318,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         chain_net: ChainNet,
         safe_height: Option<NonZeroU32>,
         trusted_typesystem: TypeSystem,
-    ) -> Result<ValidConsignment<TRANSFER>, validation::Status> {
+    ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
         self.validate_with_opids(resolver, chain_net, safe_height, trusted_typesystem, bset![])
     }
 
@@ -329,9 +329,30 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         safe_height: Option<NonZeroU32>,
         trusted_typesystem: TypeSystem,
         trusted_op_seals: BTreeSet<OpId>,
-    ) -> Result<ValidConsignment<TRANSFER>, validation::Status> {
+    ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
+        if self.transfer != TRANSFER {
+            return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
+                "invalid consignment type"
+            ))));
+        }
+        if !self.transfer && (!self.bundles.is_empty() || !self.terminals.is_empty()) {
+            return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
+                "contract consignment must not contain bundles nor terminals"
+            ))));
+        }
+
         let index = IndexedConsignment::new(&self);
-        let mut status = Validator::<MemContract<MemContractState>, _, _>::validate(
+
+        // check bundle ids listed in terminals are present in the consignment
+        for bundle_id in self.terminals.keys() {
+            if !index.bundle_ids().any(|id| id == *bundle_id) {
+                return Err(ValidationError::InvalidConsignment(Failure::Custom(format!(
+                    "terminal bundle id {bundle_id} is not present in the consignment"
+                ))));
+            }
+        }
+
+        let status = Validator::<MemContract<MemContractState>, _, _>::validate(
             &index,
             &resolver,
             chain_net,
@@ -339,36 +360,12 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             safe_height,
             trusted_op_seals,
             trusted_typesystem,
-        );
+        )?;
 
-        let validity = status.validity();
-
-        if self.transfer != TRANSFER {
-            status.add_failure(Failure::Custom(s!("invalid consignment type")));
-        }
-        if !self.transfer && (!self.bundles.is_empty() || !self.terminals.is_empty()) {
-            status.add_failure(Failure::Custom(s!(
-                "contract consignment must not contain bundles nor terminals"
-            )));
-        }
-
-        // check bundle ids listed in terminals are present in the consignment
-        for bundle_id in self.terminals.keys() {
-            if !index.bundle_ids().any(|id| id == *bundle_id) {
-                status.add_failure(Failure::Custom(format!(
-                    "terminal bundle id {bundle_id} is not present in the consignment"
-                )));
-            }
-        }
-
-        if validity == Validity::Invalid {
-            Err(status)
-        } else {
-            Ok(ValidConsignment {
-                validation_status: status,
-                consignment: self,
-            })
-        }
+        Ok(ValidConsignment {
+            validation_status: status,
+            consignment: self,
+        })
     }
 
     /// Modify a bundle in the consignment if it exists
