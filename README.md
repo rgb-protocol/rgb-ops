@@ -1,8 +1,8 @@
 # RGB Ops
 
-[![Build](https://github.com/rgb-protocol/rgb-ops/workflows/Build/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/build.yml)
-[![Tests](https://github.com/rgb-protocol/rgb-ops/workflows/Tests/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/test.yml)
-[![Lints](https://github.com/rgb-protocol/rgb-ops/workflows/Lints/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/lint.yml)
+[![Build](https://github.com/rgb-protocol/rgb-ops/actions/workflows/build.yml/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/build.yml)
+[![Tests](https://github.com/rgb-protocol/rgb-ops/actions/workflows/test.yml/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/test.yml)
+[![Lints](https://github.com/rgb-protocol/rgb-ops/actions/workflows/lint.yml/badge.svg)](https://github.com/rgb-protocol/rgb-ops/actions/workflows/lint.yml)
 [![codecov](https://codecov.io/gh/rgb-protocol/rgb-ops/branch/master/graph/badge.svg)](https://codecov.io/gh/rgb-protocol/rgb-ops)
 
 [![crates.io](https://img.shields.io/crates/v/rgb-ops)](https://crates.io/crates/rgb-ops)
