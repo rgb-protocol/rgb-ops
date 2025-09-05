@@ -19,7 +19,7 @@ consensus rules for RGB smart contracts.
 
 ## License
 
-See [LICENCE](LICENSE) file.
+See [LICENSE](LICENSE) file.
 
 
 [Consensus]: https://github.com/rgb-protocol/rgb-consensus
