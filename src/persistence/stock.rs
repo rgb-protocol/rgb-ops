@@ -26,9 +26,9 @@ use std::fmt::Debug;
 use std::num::NonZeroU32;
 
 use amplify::confinement::{Confined, LargeOrdSet};
-use bp::dbc::{Anchor, Proof};
-use bp::{Outpoint, Txid};
 use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
+use rgb::bitcoin::{OutPoint as Outpoint, Txid};
+use rgb::dbc::{Anchor, Proof};
 use rgb::validation::{
     OpoutsDagData, OpoutsDagInfo, ResolveWitness, UnsafeHistoryMap, WitnessOrdProvider,
     WitnessResolverError,
@@ -1367,8 +1367,8 @@ pub struct UpdateRes {
 #[cfg(test)]
 mod test {
     use baid64::FromBaid64Str;
-    use bp::Vout;
-    use commit_verify::{Conceal, DigestExt, Sha256};
+    use rgb::commit_verify::{Conceal, DigestExt, Sha256};
+    use rgb::Vout;
 
     use super::*;
     use crate::containers::ConsignmentExt;

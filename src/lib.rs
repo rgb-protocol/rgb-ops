@@ -27,8 +27,6 @@ extern crate amplify;
 #[macro_use]
 extern crate strict_encoding;
 #[macro_use]
-extern crate commit_verify;
-#[macro_use]
 extern crate rgbcore as rgb;
 #[cfg(feature = "serde")]
 #[macro_use]
@@ -44,11 +42,12 @@ pub mod contract;
 pub mod indexers;
 pub mod info;
 
-pub use bp::{Outpoint, Txid};
 pub use contract::{KnownState, MergeReveal, MergeRevealError, OutputAssignment, WitnessInfo};
 pub use invoice::{Allocation, Amount, CoinAmount, OwnedFraction, Precision, TokenIndex};
+pub use rgb::bitcoin::{OutPoint as Outpoint, Txid};
 pub use rgb::prelude::*;
 pub use rgb::rgbasm;
+pub use rgbcore;
 pub use stl::{LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_OPS, LIB_NAME_RGB_STORAGE};
 pub use strict_types::TypeSystem;
 

@@ -22,13 +22,14 @@
 use std::ops::Deref;
 use std::str::FromStr;
 
-use amplify::{ByteArray, Bytes32};
-use bp::{InternalPk, InvalidPubkey, OutputPk, PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
 use indexmap::IndexMap;
-use invoice::{AddressNetwork, AddressPayload, Network};
+use rgb::bitcoin::hashes::{hash160, sha256};
+use rgb::bitcoin::key::{TweakedPublicKey, UntweakedPublicKey};
+use rgb::bitcoin::{KnownHrp, Network, PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
 use rgb::{ChainNet, ContractId, Layer1, SchemaId, SecretSeal, StateType};
 use strict_types::FieldName;
 
+use crate::parse::AddressPayload;
 use crate::{Amount, NonFungible};
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
@@ -111,8 +112,8 @@ impl<T> XChainNet<T> {
 
     pub fn bitcoin(network: Network, data: T) -> Self {
         match network {
-            Network::Mainnet => Self::BitcoinMainnet(data),
-            Network::Testnet3 => Self::BitcoinTestnet3(data),
+            Network::Bitcoin => Self::BitcoinMainnet(data),
+            Network::Testnet => Self::BitcoinTestnet3(data),
             Network::Testnet4 => Self::BitcoinTestnet4(data),
             Network::Signet => Self::BitcoinSignet(data),
             Network::Regtest => Self::BitcoinRegtest(data),
@@ -145,15 +146,15 @@ impl<T> XChainNet<T> {
 
     pub fn layer1(&self) -> Layer1 { self.chain_network().layer1() }
 
-    pub fn address_network(&self) -> AddressNetwork {
+    pub fn address_network(&self) -> KnownHrp {
         match self.chain_network() {
-            ChainNet::BitcoinMainnet => AddressNetwork::Mainnet,
+            ChainNet::BitcoinMainnet => KnownHrp::Mainnet,
             ChainNet::BitcoinTestnet3 | ChainNet::BitcoinTestnet4 | ChainNet::BitcoinSignet => {
-                AddressNetwork::Testnet
+                KnownHrp::Testnets
             }
-            ChainNet::BitcoinRegtest => AddressNetwork::Regtest,
-            ChainNet::LiquidMainnet => AddressNetwork::Mainnet,
-            ChainNet::LiquidTestnet => AddressNetwork::Testnet,
+            ChainNet::BitcoinRegtest => KnownHrp::Regtest,
+            ChainNet::LiquidMainnet => KnownHrp::Mainnet,
+            ChainNet::LiquidTestnet => KnownHrp::Testnets,
         }
     }
 }
@@ -163,8 +164,8 @@ impl<T> XChainNet<T> {
 pub enum Pay2VoutError {
     /// unexpected address type byte {0:#04x}.
     InvalidAddressType(u8),
-    /// invalid taproot output key; specifically {0}.
-    InvalidTapkey(InvalidPubkey<32>),
+    /// invalid taproot output key
+    InvalidTapkey,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, From)]
@@ -192,15 +193,24 @@ impl TryFrom<[u8; 33]> for Pay2Vout {
     type Error = Pay2VoutError;
 
     fn try_from(data: [u8; 33]) -> Result<Self, Self::Error> {
+        let addr_bytes: [u8; 20] = data[1..21].try_into().unwrap();
         let address = match data[0] {
-            Self::P2PKH => AddressPayload::Pkh(PubkeyHash::from_slice_unsafe(&data[1..21])),
-            Self::P2SH => AddressPayload::Sh(ScriptHash::from_slice_unsafe(&data[1..21])),
-            Self::P2WPKH => AddressPayload::Wpkh(WPubkeyHash::from_slice_unsafe(&data[1..21])),
-            Self::P2WSH => AddressPayload::Wsh(WScriptHash::from_slice_unsafe(&data[1..])),
-            Self::P2TR => AddressPayload::Tr(
-                OutputPk::from_byte_array(Bytes32::from_slice_unsafe(&data[1..33]).to_byte_array())
-                    .map_err(Pay2VoutError::InvalidTapkey)?,
-            ),
+            Self::P2PKH => AddressPayload::Pkh(PubkeyHash::from_raw_hash(
+                *hash160::Hash::from_bytes_ref(&addr_bytes),
+            )),
+            Self::P2SH => AddressPayload::Sh(ScriptHash::from_raw_hash(
+                *hash160::Hash::from_bytes_ref(&addr_bytes),
+            )),
+            Self::P2WPKH => AddressPayload::Wpkh(WPubkeyHash::from_raw_hash(
+                *hash160::Hash::from_bytes_ref(&addr_bytes),
+            )),
+            Self::P2WSH => AddressPayload::Wsh(WScriptHash::from_raw_hash(
+                *sha256::Hash::from_bytes_ref(&data[1..].try_into().unwrap()),
+            )),
+            Self::P2TR => AddressPayload::Tr(TweakedPublicKey::dangerous_assume_tweaked(
+                UntweakedPublicKey::from_slice(&data[1..33])
+                    .map_err(|_| Pay2VoutError::InvalidTapkey)?,
+            )),
             wrong => return Err(Pay2VoutError::InvalidAddressType(wrong)),
         };
         Ok(Pay2Vout(address))
@@ -211,7 +221,7 @@ impl TryFrom<[u8; 33]> for Pay2Vout {
 pub enum Beneficiary {
     #[from]
     BlindedSeal(SecretSeal),
-    WitnessVout(Pay2Vout, Option<InternalPk>),
+    WitnessVout(Pay2Vout, Option<UntweakedPublicKey>),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -230,6 +240,6 @@ pub struct RgbInvoice {
 
 impl RgbInvoice {
     pub fn chain_network(&self) -> ChainNet { self.beneficiary.chain_network() }
-    pub fn address_network(&self) -> AddressNetwork { self.beneficiary.address_network() }
+    pub fn address_network(&self) -> KnownHrp { self.beneficiary.address_network() }
     pub fn layer1(&self) -> Layer1 { self.beneficiary.layer1() }
 }

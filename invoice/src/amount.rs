@@ -26,11 +26,10 @@ use std::iter::Sum;
 use std::num::{ParseIntError, TryFromIntError};
 use std::str::FromStr;
 
-use bp::Sats;
 use rgb::{FungibleState, RevealedValue};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use strict_encoding::{StrictDeserialize, StrictSerialize, VariantError};
+use strict_encoding::{DefaultBasedStrictDumb, StrictDeserialize, StrictSerialize, VariantError};
 use strict_types::StrictVal;
 
 use crate::LIB_NAME_RGB_CONTRACT;
@@ -38,12 +37,10 @@ use crate::LIB_NAME_RGB_CONTRACT;
 pub const ENC_BASE32_NODIGIT: &[u8; 32] = b"abcdefghkmnABCDEFGHKMNPQRSTVWXYZ";
 fast32::make_base32_alpha!(BASE32_NODIGIT, DEC_BASE32_NODIGIT, ENC_BASE32_NODIGIT);
 
-#[derive(
-    Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From
-)]
+#[derive(Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
 #[wrapper(Add, Sub, Mul, Div, Rem)]
 #[wrapper_mut(AddAssign, SubAssign, MulAssign, DivAssign, RemAssign)]
-#[derive(StrictType, StrictEncode, StrictDecode)]
+#[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
 #[strict_type(lib = LIB_NAME_RGB_CONTRACT)]
 #[cfg_attr(
     feature = "serde",
@@ -55,7 +52,6 @@ pub struct Amount(
     #[from(u32)]
     #[from(u16)]
     #[from(u8)]
-    #[from(Sats)]
     u64,
 );
 
@@ -236,6 +232,7 @@ pub enum Precision {
     CentiFemto = 17,
     Atto = 18,
 }
+impl DefaultBasedStrictDumb for Precision {}
 impl StrictSerialize for Precision {}
 impl StrictDeserialize for Precision {}
 

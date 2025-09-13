@@ -36,9 +36,9 @@ pub use specs::{
     Ticker, TokenData,
 };
 pub use stl::{
-    aluvm_stl, bp_consensus_stl, bp_core_stl, bp_tx_stl, commit_verify_stl, rgb_commit_stl,
-    rgb_contract_stl, rgb_logic_stl, rgb_ops_stl, rgb_storage_stl, StandardTypes,
-    LIB_ID_RGB_COMMIT, LIB_ID_RGB_CONTRACT, LIB_ID_RGB_LOGIC, LIB_ID_RGB_OPS, LIB_ID_RGB_STORAGE,
+    aluvm_stl, bitcoin_stl, commit_verify_stl, rgb_commit_stl, rgb_contract_stl, rgb_logic_stl,
+    rgb_ops_stl, rgb_storage_stl, StandardTypes, LIB_ID_RGB_COMMIT, LIB_ID_RGB_CONTRACT,
+    LIB_ID_RGB_LOGIC, LIB_ID_RGB_OPS, LIB_ID_RGB_STORAGE,
 };
 
 pub const LIB_NAME_RGB_OPS: &str = "RGBStd";

@@ -25,6 +25,7 @@ use rgb::RevealedData;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use strict_encoding::{StrictDeserialize, StrictSerialize};
+use strict_types::encoding::DefaultBasedStrictDumb;
 use strict_types::StrictVal;
 
 use crate::LIB_NAME_RGB_CONTRACT;
@@ -78,12 +79,12 @@ pub enum AllocationParseError {
 )]
 pub struct TokenIndex(u32);
 
-#[derive(
-    Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From
-)]
+impl DefaultBasedStrictDumb for TokenIndex {}
+
+#[derive(Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
 #[wrapper(Display, FromStr, Add, Sub, Mul, Div, Rem)]
 #[wrapper_mut(AddAssign, SubAssign, MulAssign, DivAssign, RemAssign)]
-#[derive(StrictType, StrictEncode, StrictDecode)]
+#[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
 #[strict_type(lib = LIB_NAME_RGB_CONTRACT)]
 #[cfg_attr(
     feature = "serde",
@@ -136,9 +137,9 @@ impl OwnedFraction {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, Display)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Display)]
 #[display("{1}@{0}")]
-#[derive(StrictType, StrictEncode, StrictDecode)]
+#[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
 #[strict_type(lib = LIB_NAME_RGB_CONTRACT)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate = "serde_crate"))]
 pub struct Allocation(TokenIndex, OwnedFraction);

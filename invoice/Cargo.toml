@@ -19,10 +19,8 @@ name = "rgbinvoice"
 amplify = { workspace = true }
 baid64 = { workspace = true }
 fast32 = "1.0.3"
-strict_encoding = { workspace = true }
-strict_types = { workspace = true }
-bp-core = { workspace = true }
-bp-invoice = { workspace = true }
+rgb-strict-encoding = { workspace = true }
+rgb-strict-types = { workspace = true }
 rgb-consensus = { workspace = true }
 indexmap = { workspace = true }
 fluent-uri = "0.3.2"

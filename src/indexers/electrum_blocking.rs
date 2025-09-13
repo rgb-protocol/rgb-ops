@@ -25,9 +25,9 @@ use std::iter;
 use std::num::NonZeroU32;
 
 use amplify::hex::FromHex;
-use bp::{ByteStr, ConsensusDecode, Tx, Txid};
-use electrum::{Client, ElectrumApi, Param};
-pub use electrum::{Config, ConfigBuilder, Socks5Config};
+use electrum_client::{Client, ElectrumApi, Param};
+pub use electrum_client::{Config, ConfigBuilder, Socks5Config};
+use rgb::bitcoin::{consensus, Transaction as Tx, Txid};
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
 use rgbcore::ChainNet;
@@ -113,11 +113,11 @@ impl ResolveWitness for ElectrumClient {
         let Some(tx_hex) = tx_details
             .get("hex")
             .and_then(|v| v.as_str())
-            .and_then(|s| ByteStr::from_hex(s).ok())
+            .and_then(|s| Vec::<u8>::from_hex(s).ok())
         else {
             return Err(WitnessResolverError::InvalidResolverData);
         };
-        let tx = Tx::consensus_deserialize(tx_hex)
+        let tx: Tx = consensus::deserialize(&tx_hex)
             .map_err(|_| WitnessResolverError::InvalidResolverData)?;
 
         let Some(confirmations) = tx_details.get("confirmations") else {

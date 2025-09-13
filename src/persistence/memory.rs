@@ -30,10 +30,10 @@ use amplify::confinement::{
     self, LargeOrdMap, LargeOrdSet, MediumOrdSet, SmallOrdMap, SmallOrdSet, TinyOrdMap,
 };
 use amplify::num::u24;
-use bp::dbc::tapret::TapretCommitment;
-use bp::{Outpoint, Txid};
-use commit_verify::{CommitId, Conceal};
 use nonasync::persistence::{CloneNoPersistence, Persistence, PersistenceError, Persisting};
+use rgb::bitcoin::{OutPoint as Outpoint, Txid};
+use rgb::commit_verify::{CommitId, Conceal};
+use rgb::dbc::tapret::TapretCommitment;
 use rgb::validation::DbcProof;
 use rgb::vm::{
     ContractStateAccess, ContractStateEvolve, GlobalOrd, GlobalStateEntry, GlobalsIter, OrdOpRef,
@@ -45,7 +45,7 @@ use rgb::{
     Opout, OutputSeal, RevealedData, RevealedValue, Schema, SchemaId, SecretSeal, Transition,
     TransitionBundle, TypedAssigns, VoidState,
 };
-use strict_encoding::{StrictDeserialize, StrictSerialize};
+use strict_encoding::{DefaultBasedStrictDumb, StrictDeserialize, StrictSerialize};
 use strict_types::TypeSystem;
 
 use super::{
@@ -903,6 +903,8 @@ pub struct ContractIndex {
     public_opouts: LargeOrdSet<Opout>,
     outpoint_opouts: LargeOrdMap<OutputSeal, MediumOrdSet<Opout>>,
 }
+
+impl DefaultBasedStrictDumb for ContractIndex {}
 
 #[derive(Getters, Debug)]
 #[getter(prefix = "debug_")]

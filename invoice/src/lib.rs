@@ -27,8 +27,7 @@ extern crate rgbcore as rgb;
 #[cfg(feature = "serde")]
 extern crate serde_crate as serde;
 
-/// Re-exporting BP invoice data types.
-pub use ::invoice::*;
+pub use rgb::bitcoin;
 
 #[allow(clippy::module_inception)]
 mod invoice;
@@ -40,7 +39,7 @@ mod data;
 pub use amount::{Amount, AmountParseError, CoinAmount, Precision, PrecisionError};
 pub use builder::RgbInvoiceBuilder;
 pub use data::{Allocation, NonFungible, OwnedFraction, TokenIndex};
-pub use parse::{InvoiceParseError, TransportParseError};
+pub use parse::{AddressPayload, InvoiceParseError, TransportParseError};
 
 pub use crate::invoice::{
     Beneficiary, InvoiceState, Pay2Vout, Pay2VoutError, RgbInvoice, RgbTransport, XChainNet,

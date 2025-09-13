@@ -22,8 +22,8 @@
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use bp::Outpoint;
 use invoice::{Allocation, Amount};
+use rgb::bitcoin::OutPoint as Outpoint;
 use rgb::{
     AssignmentType, ContractId, GlobalStateType, OpId, OutputSeal, RevealedData, RevealedValue,
     Schema, Txid, VoidState,

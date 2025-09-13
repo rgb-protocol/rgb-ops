@@ -21,8 +21,8 @@
 
 use amplify::confinement::Confined;
 use amplify::Wrapper;
-use bp::Txid;
-use commit_verify::{mpc, Conceal};
+use rgb::bitcoin::Txid;
+use rgb::commit_verify::{mpc, Conceal};
 use rgb::{
     Assign, Assignments, BundleId, ExposedSeal, ExposedState, Genesis, OpId, Operation, Transition,
     TransitionBundle, TypedAssigns,

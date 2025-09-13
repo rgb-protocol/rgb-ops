@@ -55,8 +55,8 @@ pub use state::{
     StateReadProvider, StateWriteProvider,
 };
 pub use stock::{
-    ComposeError, ConsignError, FasciaError, InputError as StockInputError, Stock, StockError,
-    StockErrorAll, StockErrorMem, UpdateRes,
+    ComposeError, ConsignError, ContractAssignments, FasciaError, InputError as StockInputError,
+    Stock, StockError, StockErrorAll, StockErrorMem, UpdateRes,
 };
 
 pub trait StoreTransaction {

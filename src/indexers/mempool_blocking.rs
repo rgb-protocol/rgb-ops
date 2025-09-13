@@ -19,12 +19,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bp::Txid;
-use esplora::{BlockingClient, Config, Error};
+use esplora_client::BlockingClient;
+use rgb::bitcoin::Txid;
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::ChainNet;
 
-use crate::indexers::esplora_blocking::EsploraClient;
+use crate::indexers::esplora_blocking::{Builder, EsploraClient};
 
 /// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
 /// It assumes that mempool.space exposes the same APIs as esplora.
@@ -40,19 +40,17 @@ impl MemPoolClient {
     ///
     /// # Arguments
     ///
-    /// * `url` - The URL of the mempool server.
-    /// * `config` - The configuration for the mempool client.
+    /// * `builder` - The builder for the mempool client.
     ///
     /// # Returns
     ///
-    /// Returns a `Result` containing the `MemPoolClient` instance if
-    /// successful, or an `Error` if an error occurred.
+    /// Returns the `MemPoolClient` instance.
     #[allow(clippy::result_large_err)]
-    pub fn new(url: &str, config: Config) -> Result<Self, Error> {
+    pub fn new(builder: Builder) -> Self {
         let inner = EsploraClient {
-            inner: BlockingClient::from_config(url, config)?,
+            inner: BlockingClient::from_builder(builder),
         };
-        Ok(MemPoolClient { inner })
+        MemPoolClient { inner }
     }
 }
 
@@ -68,62 +66,60 @@ impl ResolveWitness for MemPoolClient {
 
 #[cfg(test)]
 mod test {
-    use esplora::Config;
+    use super::*;
+
     #[test]
     fn test_mempool_client_mainnet_tx() {
-        let client = super::MemPoolClient::new("https://mempool.space/api", Config::default())
-            .expect("Failed to create client");
+        let builder = Builder::new("https://mempool.space/api");
+        let client = super::MemPoolClient::new(builder);
         let txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
             .parse()
             .unwrap();
-        let status = client.inner.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.get_tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1231006505));
     }
 
     #[test]
     fn test_mempool_client_testnet_tx() {
-        let client =
-            super::MemPoolClient::new("https://mempool.space/testnet/api", Config::default())
-                .expect("Failed to create client");
+        let builder = Builder::new("https://mempool.space/testnet/api");
+        let client = super::MemPoolClient::new(builder);
 
         let txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
             .parse()
             .unwrap();
-        let status = client.inner.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.get_tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1296688602));
     }
 
     #[test]
     fn test_mempool_client_testnet4_tx() {
-        let client =
-            super::MemPoolClient::new("https://mempool.space/testnet4/api", Config::default())
-                .expect("Failed to create client");
+        let builder = Builder::new("https://mempool.space/testnet4/api");
+        let client = super::MemPoolClient::new(builder);
         let txid = "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"
             .parse()
             .unwrap();
-        let status = client.inner.inner.tx_status(&txid).unwrap();
+        let status = client.inner.inner.get_tx_status(&txid).unwrap();
         assert_eq!(status.block_height, Some(0));
         assert_eq!(status.block_time, Some(1714777860));
     }
 
     #[test]
     fn test_mempool_client_testnet4_tx_detail() {
-        let client =
-            super::MemPoolClient::new("https://mempool.space/testnet4/api", Config::default())
-                .expect("Failed to create client");
+        let builder = Builder::new("https://mempool.space/testnet4/api");
+        let client = super::MemPoolClient::new(builder);
         let txid = "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"
             .parse()
             .unwrap();
         let tx = client
             .inner
             .inner
-            .tx(&txid)
+            .get_tx(&txid)
             .expect("Failed to get tx")
             .expect("Tx not found");
-        assert!(!tx.inputs.is_empty());
-        assert!(!tx.outputs.is_empty());
-        assert_eq!(tx.outputs[0].value, 5_000_000_000);
+        assert!(!tx.input.is_empty());
+        assert!(!tx.output.is_empty());
+        assert_eq!(tx.output[0].value.to_sat(), 5_000_000_000);
     }
 }

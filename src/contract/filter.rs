@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 
-use bp::{Outpoint, Txid};
+use rgb::bitcoin::{OutPoint as Outpoint, Txid};
 
 pub trait AssignmentsFilter {
     fn should_include(&self, outpoint: impl Into<Outpoint>, witness_id: Option<Txid>) -> bool;

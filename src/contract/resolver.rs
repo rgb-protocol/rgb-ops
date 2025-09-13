@@ -19,7 +19,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bp::{Tx, Txid};
+use rgb::bitcoin::{Transaction as Tx, Txid};
 use rgb::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgb::vm::WitnessOrd;
 use rgb::ChainNet;

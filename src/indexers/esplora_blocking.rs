@@ -21,9 +21,9 @@
 
 use std::num::NonZeroU32;
 
-use bp::Txid;
-use esplora::BlockingClient;
-pub use esplora::{Builder, Config};
+use esplora_client::BlockingClient;
+pub use esplora_client::Builder;
+use rgb::bitcoin::Txid;
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
 use rgbcore::ChainNet;
@@ -38,7 +38,7 @@ impl ResolveWitness for EsploraClient {
         // check the esplora server is for the correct network
         let block_hash = self
             .inner
-            .block_hash(0)
+            .get_block_hash(0)
             .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?;
         if chain_net.genesis_block_hash() != block_hash {
             return Err(WitnessResolverError::WrongChainNet);
@@ -49,14 +49,14 @@ impl ResolveWitness for EsploraClient {
     fn resolve_witness(&self, txid: Txid) -> Result<WitnessStatus, WitnessResolverError> {
         let Some(tx) = self
             .inner
-            .tx(&txid)
+            .get_tx(&txid)
             .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?
         else {
             return Ok(WitnessStatus::Unresolved);
         };
         let status = self
             .inner
-            .tx_status(&txid)
+            .get_tx_status(&txid)
             .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?;
         let ord = match status
             .block_height

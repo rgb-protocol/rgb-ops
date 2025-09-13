@@ -24,8 +24,8 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use amplify::confinement::{self, SmallOrdSet};
-use bp::{Outpoint, Txid};
 use nonasync::persistence::{CloneNoPersistence, Persisting};
+use rgb::bitcoin::{OutPoint as Outpoint, Txid};
 use rgb::{
     Assign, AssignmentType, BundleId, ContractId, ExposedState, Genesis, GenesisSeal, GraphSeal,
     KnownTransition, OpId, Operation, Opout, TransitionBundle, TypedAssigns,

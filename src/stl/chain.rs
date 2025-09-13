@@ -20,8 +20,8 @@
 // limitations under the License.
 
 use amplify::confinement::SmallBlob;
-use amplify::ByteArray;
-use bp::{Outpoint, Txid};
+use rgb::bitcoin::hashes::sha256d;
+use rgb::bitcoin::{OutPoint as Outpoint, Txid};
 use strict_encoding::{StrictDeserialize, StrictSerialize};
 use strict_types::StrictVal;
 
@@ -45,7 +45,12 @@ impl ProofOfReserves {
 
     pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
         let utxo = value.unwrap_struct("utxo");
-        let txid = Txid::from_slice_unsafe(utxo.unwrap_struct("txid").unwrap_bytes());
+        let txid_bytes: [u8; 32] = utxo
+            .unwrap_struct("txid")
+            .unwrap_bytes()
+            .try_into()
+            .unwrap();
+        let txid = Txid::from_raw_hash(*sha256d::Hash::from_bytes_ref(&txid_bytes));
         let vout: u32 = utxo.unwrap_struct("vout").unwrap_uint();
         let utxo = Outpoint::new(txid, vout);
 

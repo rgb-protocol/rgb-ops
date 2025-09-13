@@ -24,6 +24,7 @@ use std::iter;
 
 use amplify::confinement::{NonEmptyOrdSet, U16};
 use rgb::SecretSeal;
+use strict_encoding::DefaultBasedStrictDumb;
 
 use crate::LIB_NAME_RGB_OPS;
 
@@ -42,6 +43,8 @@ pub enum ContainerVer {
     #[display("v0", alt = "0")]
     V0 = 0,
 }
+
+impl DefaultBasedStrictDumb for ContainerVer {}
 
 /// Non-empty set of secret seals.
 #[derive(Wrapper, WrapperMut, Clone, PartialEq, Eq, Hash, Debug, From)]

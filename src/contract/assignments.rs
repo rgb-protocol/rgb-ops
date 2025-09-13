@@ -34,7 +34,7 @@ use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
 use crate::LIB_NAME_RGB_OPS;
 
-/// Trait used by contract state. Unlike [`ExposedState`] it doesn't allow
+/// Trait used by contract state. Unlike [`rgb::ExposedState`] it doesn't allow
 /// concealment of the state, i.e. may contain incomplete data without blinding
 /// factors, asset tags etc.
 pub trait KnownState: Debug + StrictDumb + StrictEncode + StrictDecode + Eq + Clone + Hash {

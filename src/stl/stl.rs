@@ -19,16 +19,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use bp::bc::stl::{bp_consensus_stl, bp_tx_stl};
-pub use bp::stl::bp_core_stl;
-#[allow(unused_imports)]
-pub use commit_verify::stl::{commit_verify_stl, LIB_ID_COMMIT_VERIFY};
 use invoice::{Allocation, Amount};
-pub use rgb::stl::{aluvm_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT, LIB_ID_RGB_LOGIC};
+use rgb::stl::bp_core_stl;
+pub use rgb::stl::{
+    aluvm_stl, commit_verify_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT,
+    LIB_ID_RGB_LOGIC,
+};
 use rgb::Schema;
-use strict_types::stl::{std_stl, strict_types_stl};
+pub use strict_types::stl::bitcoin_stl;
+use strict_types::stl::{bitcoin_tx_stl, std_stl, strict_types_stl};
 use strict_types::typesys::SystemBuilder;
-use strict_types::{CompileError, LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
+use strict_types::{LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
 
 use super::{
     AssetSpec, AttachmentType, BurnMeta, ContractSpec, ContractTerms, EmbeddedMedia, Error,
@@ -42,65 +43,72 @@ use crate::LIB_NAME_RGB_OPS;
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_STORAGE: &str =
-    "stl:rYIkl4Ol-15bjw4Y-0bXJ~7o-2o~3CkY-HFE~Bgi-EFSiSc8#survive-immune-twin";
+    "stl:9sGk23sr-gVlm5lh-km_EG2x-NSXC_zk-jv5VmWL-8rhyjIA#easy-impact-wolf";
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_CONTRACT: &str =
-    "stl:oKImP6R~-7RZs4n2-EzPPuQP-H59Ol51-aN2GKYC-MgX~z3I#isotope-judo-good";
+    "stl:EmO~FVyw-REYTWMy-M_VR5d~-Wrwqoq7-fLAFwSz-9AYhR7M#cover-flash-polo";
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
-    "stl:r1GC~anx-KuJPTuL-5BZ9qof-J2NY2~T-FTYiA6F-Abtg4uU#stick-tornado-absorb";
+    "stl:HNePR5_o-3F_0jaN-E95tPQg-GWaM2wG-QWZwE9K-oq1XiNw#lunar-present-torso";
 
-fn _rgb_ops_stl() -> Result<TypeLib, Box<CompileError>> {
+/// Generates strict type library representation of RGB Ops data types.
+pub fn rgb_ops_stl() -> TypeLib {
     // TODO: wait for fix in strict_types to use LibBuilder::with
     #[allow(deprecated)]
-    Ok(LibBuilder::new(libname!(LIB_NAME_RGB_OPS), [
+    LibBuilder::new(libname!(LIB_NAME_RGB_OPS), [
         std_stl().to_dependency(),
         strict_types_stl().to_dependency(),
         commit_verify_stl().to_dependency(),
-        bp_consensus_stl().to_dependency(),
+        bitcoin_stl().to_dependency(),
         bp_core_stl().to_dependency(),
         aluvm_stl().to_dependency(),
         rgb_commit_stl().to_dependency(),
         rgb_logic_stl().to_dependency(),
     ])
-    .transpile::<Transfer>()
     .transpile::<Contract>()
     .transpile::<Kit>()
-    .compile()?)
+    .transpile::<Transfer>()
+    .compile()
+    .unwrap()
 }
 
-fn _rgb_contract_stl() -> Result<TypeLib, Box<CompileError>> {
-    Ok(LibBuilder::with(libname!(LIB_NAME_RGB_CONTRACT), [
+/// Generates strict type library providing standard data types which may be
+/// used in RGB smart contracts.
+pub fn rgb_contract_stl() -> TypeLib {
+    LibBuilder::with(libname!(LIB_NAME_RGB_CONTRACT), [
         std_stl().to_dependency_types(),
-        bp_consensus_stl().to_dependency_types(),
+        bitcoin_stl().to_dependency_types(),
     ])
-    .transpile::<Amount>()
     .transpile::<Allocation>()
-    .transpile::<ContractSpec>()
+    .transpile::<Amount>()
     .transpile::<AssetSpec>()
+    .transpile::<AttachmentType>()
+    .transpile::<BurnMeta>()
+    .transpile::<ContractSpec>()
     .transpile::<ContractTerms>()
+    .transpile::<EmbeddedMedia>()
+    .transpile::<IssueMeta>()
     .transpile::<MediaType>()
     .transpile::<ProofOfReserves>()
-    .transpile::<BurnMeta>()
-    .transpile::<IssueMeta>()
-    .transpile::<AttachmentType>()
-    .transpile::<TokenData>()
-    .transpile::<EmbeddedMedia>()
     .transpile::<RejectListUrl>()
-    .compile()?)
+    .transpile::<TokenData>()
+    .compile()
+    .unwrap()
 }
 
-fn _rgb_storage_stl() -> Result<TypeLib, Box<CompileError>> {
+/// Generates strict type library providing standard storage for state, contract
+/// state and index.
+pub fn rgb_storage_stl() -> TypeLib {
     // TODO: wait for fix in strict_types to use LibBuilder::with
     #[allow(deprecated)]
-    Ok(LibBuilder::new(libname!(LIB_NAME_RGB_STORAGE), [
+    LibBuilder::new(libname!(LIB_NAME_RGB_STORAGE), [
         std_stl().to_dependency(),
         strict_types_stl().to_dependency(),
         commit_verify_stl().to_dependency(),
-        bp_tx_stl().to_dependency(),
+        bitcoin_tx_stl().to_dependency(),
         bp_core_stl().to_dependency(),
         aluvm_stl().to_dependency(),
         rgb_commit_stl().to_dependency(),
@@ -108,24 +116,10 @@ fn _rgb_storage_stl() -> Result<TypeLib, Box<CompileError>> {
         rgb_ops_stl().to_dependency(),
     ])
     .transpile::<MemIndex>()
-    .transpile::<MemState>()
     .transpile::<MemStash>()
-    .compile()?)
-}
-
-/// Generates strict type library representation of RGB Ops data types.
-pub fn rgb_ops_stl() -> TypeLib { _rgb_ops_stl().expect("invalid strict type RGBOps library") }
-
-/// Generates strict type library providing standard data types which may be
-/// used in RGB smart contracts.
-pub fn rgb_contract_stl() -> TypeLib {
-    _rgb_contract_stl().expect("invalid strict type RGBContract library")
-}
-
-/// Generates strict type library providing standard storage for state, contract
-/// state and index.
-pub fn rgb_storage_stl() -> TypeLib {
-    _rgb_storage_stl().expect("invalid strict type RGBStorage library")
+    .transpile::<MemState>()
+    .compile()
+    .unwrap()
 }
 
 #[derive(Debug)]
@@ -133,7 +127,7 @@ pub struct StandardTypes(SymbolicSys);
 
 impl StandardTypes {
     pub fn with(lib: TypeLib) -> Self {
-        Self::try_with([std_stl(), bp_consensus_stl(), rgb_contract_stl(), lib])
+        Self::try_with([std_stl(), bitcoin_stl(), rgb_contract_stl(), lib])
             .expect("error in standard RGBContract type system")
     }
 

@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use bp::{Tx, Txid};
+use rgb::bitcoin::{Transaction as Tx, Txid};
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::WitnessOrd;
 use rgbcore::ChainNet;
@@ -43,10 +43,13 @@ pub struct AnyResolver {
 impl AnyResolver {
     /// Return an [`AnyResolver`] wrapping an [`super::electrum_blocking::ElectrumClient`].
     #[cfg(feature = "electrum_blocking")]
-    pub fn electrum_blocking(url: &str, config: Option<electrum::Config>) -> Result<Self, String> {
+    pub fn electrum_blocking(
+        url: &str,
+        config: Option<electrum_client::Config>,
+    ) -> Result<Self, String> {
         Ok(AnyResolver {
             inner: Box::new(super::electrum_blocking::ElectrumClient {
-                inner: electrum::Client::from_config(url, config.unwrap_or_default())
+                inner: electrum_client::Client::from_config(url, config.unwrap_or_default())
                     .map_err(|e| e.to_string())?,
             }),
             consignment_txes: Default::default(),
@@ -55,11 +58,10 @@ impl AnyResolver {
 
     /// Return an [`AnyResolver`] wrapping an [`super::esplora_blocking::EsploraClient`].
     #[cfg(feature = "esplora_blocking")]
-    pub fn esplora_blocking(url: &str, config: Option<esplora::Config>) -> Result<Self, String> {
+    pub fn esplora_blocking(builder: esplora_client::Builder) -> Result<Self, String> {
         Ok(AnyResolver {
             inner: Box::new(super::esplora_blocking::EsploraClient {
-                inner: esplora::BlockingClient::from_config(url, config.unwrap_or_default())
-                    .map_err(|e| e.to_string())?,
+                inner: esplora_client::BlockingClient::from_builder(builder),
             }),
             consignment_txes: Default::default(),
         })
@@ -67,12 +69,12 @@ impl AnyResolver {
 
     /// Return an [`AnyResolver`] wrapping a [`super::mempool_blocking::MemPoolClient`].
     #[cfg(feature = "mempool_blocking")]
-    pub fn mempool_blocking(url: &str, config: Option<esplora::Config>) -> Result<Self, String> {
+    pub fn mempool_blocking(
+        _url: &str,
+        builder: Option<esplora_client::Builder>,
+    ) -> Result<Self, String> {
         Ok(AnyResolver {
-            inner: Box::new(super::mempool_blocking::MemPoolClient::new(
-                url,
-                config.unwrap_or_default(),
-            )?),
+            inner: Box::new(super::mempool_blocking::MemPoolClient::new(builder.unwrap())),
             consignment_txes: Default::default(),
         })
     }
@@ -87,7 +89,7 @@ impl AnyResolver {
                 .bundles
                 .iter()
                 .filter_map(|bw| bw.pub_witness.tx().cloned())
-                .map(|tx| (tx.txid(), tx)),
+                .map(|tx| (tx.compute_txid(), tx)),
         );
     }
 }

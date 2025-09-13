@@ -30,7 +30,7 @@ use amplify::confinement::{Confined, LargeVec, SmallOrdMap, SmallOrdSet};
 use amplify::{ByteArray, Bytes32};
 use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
-use commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
+use rgb::commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
     EAnchor, Failure, ResolveWitness, ValidationConfig, ValidationError, Validator,
     CONSIGNMENT_MAX_LIBS,
@@ -211,9 +211,9 @@ impl<const TRANSFER: bool> Deref for ValidConsignment<TRANSFER> {
 /// All consignments-related procedures, including validation or merging
 /// consignments data into stash or schema-specific data storage, must start
 /// with `endpoints` and process up to the genesis.
-#[derive(Clone, Debug, Display)]
+#[derive(Clone, Debug, PartialEq, Display)]
 #[display(AsciiArmor::to_ascii_armored_string)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode, PartialEq)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
     feature = "serde",

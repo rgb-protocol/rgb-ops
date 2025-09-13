@@ -34,15 +34,15 @@ use amplify::Bytes32;
 use invoice::{Precision, TokenIndex};
 use strict_encoding::stl::{Alpha, AlphaNum, AsciiPrintable};
 use strict_encoding::{
-    InvalidRString, RString, StrictDeserialize, StrictDumb, StrictEncode, StrictSerialize,
-    StrictType, TypedWrite,
+    DefaultBasedStrictDumb, InvalidRString, RString, StrictDecode, StrictDeserialize, StrictDumb,
+    StrictEncode, StrictSerialize, StrictType, TypedWrite,
 };
 use strict_types::StrictVal;
 
 use super::{MediaType, ProofOfReserves, LIB_NAME_RGB_CONTRACT};
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Default)]
-#[derive(StrictType, StrictEncode, StrictDecode)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
 #[strict_type(lib = LIB_NAME_RGB_CONTRACT)]
 #[cfg_attr(
     feature = "serde",
@@ -55,8 +55,8 @@ pub struct BurnMeta {
 impl StrictSerialize for BurnMeta {}
 impl StrictDeserialize for BurnMeta {}
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Default)]
-#[derive(StrictType, StrictEncode, StrictDecode)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
 #[strict_type(lib = LIB_NAME_RGB_CONTRACT)]
 #[cfg_attr(
     feature = "serde",
@@ -340,6 +340,7 @@ impl ContractSpec {
     serde(crate = "serde_crate", transparent)
 )]
 pub struct RicardianContract(SmallString);
+impl DefaultBasedStrictDumb for RicardianContract {}
 impl StrictSerialize for RicardianContract {}
 impl StrictDeserialize for RicardianContract {}
 
@@ -535,6 +536,7 @@ pub struct TokenData {
     pub reserves: Option<ProofOfReserves>,
 }
 
+impl DefaultBasedStrictDumb for TokenData {}
 impl StrictSerialize for TokenData {}
 impl StrictDeserialize for TokenData {}
 

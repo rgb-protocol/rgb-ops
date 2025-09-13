@@ -19,10 +19,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bp::seals::txout::{BlindSeal, CloseMethod, SealTxid};
-use bp::secp256k1::rand::{thread_rng, RngCore};
-use bp::Vout;
-use rgb::{GraphSeal, SecretSeal, TxoSeal};
+use rgb::seals::txout::{BlindSeal, CloseMethod, SealTxid};
+use rgb::secp256k1::rand::{thread_rng, RngCore};
+use rgb::{GraphSeal, SecretSeal, TxoSeal, Vout};
 
 use crate::LIB_NAME_RGB_OPS;
 

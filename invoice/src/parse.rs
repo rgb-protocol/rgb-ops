@@ -25,13 +25,15 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
-use bp::InternalPk;
 use fluent_uri::encoding::encoder::Query;
 use fluent_uri::encoding::EStr;
 use fluent_uri::Uri;
 use indexmap::IndexMap;
-use invoice::{AddressPayload, UnknownNetwork};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use rgb::bitcoin::hashes::{hash160, sha256};
+use rgb::bitcoin::key::{TweakedPublicKey, UntweakedPublicKey};
+use rgb::bitcoin::params::Params;
+use rgb::bitcoin::{Address, Network, PubkeyHash, ScriptBuf, ScriptHash, WPubkeyHash, WScriptHash};
 use rgb::{ChainNet, ContractId, SchemaId, SecretSeal};
 use strict_types::FieldName;
 
@@ -109,9 +111,8 @@ pub enum InvoiceParseError {
     /// invalid expiration timestamp {0}.
     InvalidExpiration(String),
 
-    #[display(inner)]
-    #[from]
-    InvalidNetwork(UnknownNetwork),
+    /// invalid network {0}
+    InvalidNetwork(Network),
 
     /// invalid query parameter {0}.
     InvalidQueryParam(String),
@@ -224,6 +225,90 @@ impl Display for XChainNet<Beneficiary> {
     }
 }
 
+/// Internal address content. Consists of serialized hashes or x-only key value.
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
+pub enum AddressPayload {
+    /// P2PKH payload.
+    #[from]
+    Pkh(PubkeyHash),
+
+    /// P2SH and SegWit nested (proprietary) P2WPKH/WSH-in-P2SH payloads.
+    #[from]
+    Sh(ScriptHash),
+
+    /// P2WPKH payload.
+    #[from]
+    Wpkh(WPubkeyHash),
+
+    /// P2WSH payload.
+    #[from]
+    Wsh(WScriptHash),
+
+    /// P2TR payload.
+    #[from]
+    Tr(TweakedPublicKey),
+}
+
+/// Errors creating address from scriptPubkey.
+#[derive(Clone, Eq, PartialEq, Debug, Display, Error)]
+#[display(doc_comments)]
+pub enum AddressError {
+    /// scriptPubkey contains invalid BIP340 output pubkey.
+    InvalidTaprootKey,
+    /// scriptPubkey can't be represented with any known address standard.
+    UnsupportedScriptPubkey,
+}
+
+impl AddressPayload {
+    pub fn into_address(self, network: Network) -> Address {
+        // since we don't allow to construct AddressPayload without checking its script, the unwrap
+        // is safe here
+        Address::from_script(&self.to_script(), Params::new(network)).unwrap()
+    }
+
+    /// Constructs payload from a given `ScriptBuf`. Fails on future
+    /// (post-taproot) witness types with `None`.
+    pub fn from_script(script: &ScriptBuf) -> Result<Self, AddressError> {
+        Ok(if script.is_p2pkh() {
+            let mut bytes = [0u8; 20];
+            bytes.copy_from_slice(&script.as_bytes()[3..23]);
+            AddressPayload::Pkh(PubkeyHash::from_raw_hash(*hash160::Hash::from_bytes_ref(&bytes)))
+        } else if script.is_p2sh() {
+            let mut bytes = [0u8; 20];
+            bytes.copy_from_slice(&script.as_bytes()[2..22]);
+            AddressPayload::Sh(ScriptHash::from_raw_hash(*hash160::Hash::from_bytes_ref(&bytes)))
+        } else if script.is_p2wpkh() {
+            let mut bytes = [0u8; 20];
+            bytes.copy_from_slice(&script.as_bytes()[2..]);
+            AddressPayload::Wpkh(WPubkeyHash::from_raw_hash(*hash160::Hash::from_bytes_ref(&bytes)))
+        } else if script.is_p2wsh() {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&script.as_bytes()[2..]);
+            AddressPayload::Wsh(WScriptHash::from_raw_hash(*sha256::Hash::from_bytes_ref(&bytes)))
+        } else if script.is_p2tr() {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&script.as_bytes()[2..]);
+            AddressPayload::Tr(TweakedPublicKey::dangerous_assume_tweaked(
+                UntweakedPublicKey::from_slice(&bytes)
+                    .map_err(|_| AddressError::InvalidTaprootKey)?,
+            ))
+        } else {
+            return Err(AddressError::UnsupportedScriptPubkey);
+        })
+    }
+
+    /// Returns script corresponding to the given address.
+    pub fn to_script(self) -> ScriptBuf {
+        match self {
+            AddressPayload::Pkh(hash) => ScriptBuf::new_p2pkh(&hash),
+            AddressPayload::Sh(hash) => ScriptBuf::new_p2sh(&hash),
+            AddressPayload::Wpkh(hash) => ScriptBuf::new_p2wpkh(&hash),
+            AddressPayload::Wsh(hash) => ScriptBuf::new_p2wsh(&hash),
+            AddressPayload::Tr(output_key) => ScriptBuf::new_p2tr_tweaked(output_key),
+        }
+    }
+}
+
 impl DisplayBaid64<33> for Pay2Vout {
     const HRI: &'static str = "wvout";
     const CHUNKING: bool = true;
@@ -241,7 +326,7 @@ impl DisplayBaid64<33> for Pay2Vout {
             AddressPayload::Wpkh(wpkh) => (Self::P2WPKH, wpkh.as_ref()),
             AddressPayload::Wsh(wsh) => (Self::P2WSH, wsh.as_ref()),
             AddressPayload::Tr(tr) => {
-                schnorr_pk = tr.to_byte_array();
+                schnorr_pk = tr.serialize();
                 (Self::P2TR, &schnorr_pk[..])
             }
         };
@@ -290,7 +375,7 @@ impl FromStr for XChainNet<Beneficiary> {
                     return Err(InvoiceParseError::Beneficiary(s!("missing internal pk")));
                 }
                 Some(
-                    InternalPk::from_str(i)
+                    UntweakedPublicKey::from_str(i)
                         .map_err(|_| InvoiceParseError::Beneficiary(s!("invalid internal pk")))?,
                 )
             }
@@ -476,6 +561,8 @@ fn map_query_params(uri: &Uri<&str>) -> Result<IndexMap<String, String>, Invoice
 
 #[cfg(test)]
 mod test {
+    use rgb::bitcoin::hashes::{hash160, sha256};
+
     use super::*;
     use crate::{Allocation, Amount, NonFungible};
 
@@ -856,26 +943,34 @@ mod test {
 
     #[test]
     fn pay2vout_parse() {
-        let p = Pay2Vout::new(AddressPayload::Pkh([0xff; 20].into()));
+        let p = Pay2Vout::new(AddressPayload::Pkh(PubkeyHash::from_raw_hash(
+            *hash160::Hash::from_bytes_ref(&[0xff; 20]),
+        )));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout::new(AddressPayload::Sh([0xff; 20].into()));
+        let p = Pay2Vout::new(AddressPayload::Sh(ScriptHash::from_raw_hash(
+            *hash160::Hash::from_bytes_ref(&[0xff; 20]),
+        )));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout::new(AddressPayload::Wpkh([0xff; 20].into()));
+        let p = Pay2Vout::new(AddressPayload::Wpkh(WPubkeyHash::from_raw_hash(
+            *hash160::Hash::from_bytes_ref(&[0xff; 20]),
+        )));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout::new(AddressPayload::Wsh([0xff; 32].into()));
+        let p = Pay2Vout::new(AddressPayload::Wsh(WScriptHash::from_raw_hash(
+            *sha256::Hash::from_bytes_ref(&[0xff; 32]),
+        )));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout::new(AddressPayload::Tr(
-            bp::OutputPk::from_byte_array([
+        let p = Pay2Vout::new(AddressPayload::Tr(TweakedPublicKey::dangerous_assume_tweaked(
+            UntweakedPublicKey::from_slice(&[
                 0x85, 0xa6, 0x42, 0x59, 0x8b, 0xfe, 0x2e, 0x42, 0xa3, 0x78, 0xcb, 0xb5, 0x3b, 0xf1,
                 0x4a, 0xbe, 0x77, 0xf8, 0x1a, 0xef, 0xed, 0xf7, 0x3b, 0x66, 0x7b, 0x42, 0x85, 0xaf,
                 0x7c, 0xf1, 0xc8, 0xa3,
             ])
             .unwrap(),
-        ));
+        )));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
     }
 }

@@ -26,10 +26,10 @@ use std::fmt::Debug;
 use aluvm::library::{Lib, LibId};
 use amplify::confinement::Confined;
 use amplify::ByteArray;
-use bp::dbc::tapret::TapretCommitment;
-use bp::seals::txout::CloseMethod;
-use commit_verify::mpc::{self, MerkleBlock};
 use nonasync::persistence::{CloneNoPersistence, Persisting};
+use rgb::commit_verify::mpc::{self, MerkleBlock};
+use rgb::dbc::tapret::TapretCommitment;
+use rgb::seals::txout::CloseMethod;
 use rgb::validation::Scripts;
 use rgb::{
     BundleId, ChainNet, ContractId, Genesis, GraphSeal, Identity, OpId, Schema, SchemaId,
