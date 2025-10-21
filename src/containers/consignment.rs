@@ -143,6 +143,14 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
 
     pub fn into_validation_status(self) -> validation::Status { self.validation_status }
 
+    pub fn into_valid_contract(self) -> ValidContract {
+        ValidContract {
+            // once/if we begin collecting warnings on genesis we need to change this
+            validation_status: validation::Status::default(),
+            consignment: self.consignment.into_contract(),
+        }
+    }
+
     pub fn split(self) -> (Consignment<TRANSFER>, validation::Status) {
         (self.consignment, self.validation_status)
     }
