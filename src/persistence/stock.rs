@@ -19,7 +19,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
@@ -782,9 +781,11 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 }
             }
 
-            if let Entry::Vacant(entry) = bundles.entry(bundle_id) {
-                entry.insert(self.witness_bundle(bundle_id)?);
-            }
+            if let Some((ref mut wbundle, _)) = bundles.get_mut(&bundle_id) {
+                wbundle.bundle.reveal_transition(transition.clone())?;
+            } else {
+                bundles.insert(bundle_id, self.witness_bundle(bundle_id, opid)?);
+            };
         }
 
         let is_asset_replacement =
@@ -812,12 +813,11 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 }));
             }
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
-            bundles
-                .entry(bundle_id)
-                .or_insert(self.witness_bundle(bundle_id)?.clone())
-                .0
-                .bundle
-                .reveal_transition(transition.clone())?;
+            if let Some((ref mut wbundle, _)) = bundles.get_mut(&bundle_id) {
+                wbundle.bundle.reveal_transition(transition.clone())?;
+            } else {
+                bundles.insert(bundle_id, self.witness_bundle(bundle_id, id)?);
+            };
         }
 
         let genesis = self.stash.genesis(contract_id)?.clone();
@@ -975,9 +975,14 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     fn witness_bundle(
         &self,
         bundle_id: BundleId,
-    ) -> Result<(WitnessBundle, u32), StockError<S, H, P>> {
+        opid: OpId,
+    ) -> Result<(WitnessBundle, u32), StockError<S, H, P, ConsignError>> {
         let (witness_ids, contract_id) = self.index.bundle_info(bundle_id)?;
-        let bundle = self.stash.bundle(bundle_id)?.clone();
+        let bundle = self
+            .stash
+            .bundle(bundle_id)?
+            .to_concealed_except(opid)
+            .map_err(|e| StockError::from(ConsignError::Transition(e)))?;
         let (witness_id, witness_ord) = self.state.select_valid_witness(witness_ids)?;
         let witness = self.stash.witness(witness_id)?;
         let pub_witness = witness.public.clone();
@@ -991,8 +996,6 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .into());
         };
         let anchor = Anchor::new(mpc_proof, witness.dbc_proof.clone());
-
-        // TODO: Conceal all transitions except the one we need
 
         let height = match witness_ord {
             WitnessOrd::Mined(pos) => pos.height().into(),
