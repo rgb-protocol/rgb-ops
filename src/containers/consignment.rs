@@ -160,7 +160,33 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
         let mut unfiltered =
             MemContractState::new(&self.consignment.schema, self.consignment.contract_id());
         unfiltered.add_operation(OrdOpRef::Genesis(&self.consignment.genesis));
-        let state = MemContract::new(HashMap::new(), BTreeSet::new(), unfiltered);
+
+        let filter = if TRANSFER {
+            let mut filter = HashMap::new();
+            for (transition, witness_id, bundle_id) in
+                self.bundles.iter().flat_map(|witness_bundle| {
+                    let witness_id = witness_bundle.pub_witness.txid();
+                    let bundle_id = witness_bundle.bundle.bundle_id();
+                    witness_bundle
+                        .bundle
+                        .known_transitions
+                        .iter()
+                        .map(move |known_transition| {
+                            (&known_transition.transition, witness_id, bundle_id)
+                        })
+                })
+            {
+                let ord = self.validation_status.tx_ord_map.get(&witness_id).unwrap();
+                filter.insert(witness_id, *ord);
+                unfiltered
+                    .add_operation(OrdOpRef::Transition(transition, witness_id, *ord, bundle_id));
+            }
+            filter
+        } else {
+            HashMap::new()
+        };
+
+        let state = MemContract::new(filter, BTreeSet::new(), unfiltered);
         let info = ContractInfo::with(&self.consignment.genesis);
         ContractData {
             state,
