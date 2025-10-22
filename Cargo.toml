@@ -11,7 +11,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1-rc.4"
+version = "0.11.1-rc.5"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -33,7 +33,7 @@ strict_types = "2.8.3"
 commit_verify = { version = "0.11.1-alpha.2", features = ["stl"] }
 bp-core = { version = "0.11.1-alpha.2", features = ["stl"] }
 bp-invoice = { version = "0.11.1-alpha.2" }
-rgb-consensus = { version = "0.11.1-rc.4", features = ["stl"] }
+rgb-consensus = { version = "0.11.1-rc.5", features = ["stl"] }
 indexmap = "2.4.0"
 serde_crate = { package = "serde", version = "1", features = ["derive"] }
 
@@ -67,7 +67,7 @@ strict_types = { workspace = true }
 commit_verify = { workspace = true }
 bp-core = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1-rc.4", path = "invoice" }
+rgb-invoicing = { version = "0.11.1-rc.5", path = "invoice" }
 aluvm = "0.11.1-alpha.2"
 base85 = "=2.0.0"
 chrono = "0.4.38"
@@ -105,6 +105,3 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.docs.rs]
 features = ["all"]
-
-[patch.crates-io]
-rgb-consensus = { git = "https://github.com/rgb-protocol/rgb-consensus", branch = "master" }
