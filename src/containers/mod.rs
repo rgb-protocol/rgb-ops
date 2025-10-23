@@ -28,7 +28,6 @@ mod anchors;
 mod consignment;
 mod util;
 mod partials;
-mod indexed;
 mod file;
 mod kit;
 
@@ -38,7 +37,6 @@ pub use consignment::{
     ValidConsignment, ValidContract, ValidTransfer,
 };
 pub use file::{FileContent, LoadError, UniversalFile};
-pub use indexed::IndexedConsignment;
 pub use kit::{Kit, KitId, ValidKit};
 pub use partials::{Batch, Fascia};
 pub use seal::{BuilderSeal, VoutSeal};

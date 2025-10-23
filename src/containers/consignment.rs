@@ -32,19 +32,21 @@ use amplify::{ByteArray, Bytes32};
 use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
-use rgb::validation::{Failure, ResolveWitness, ValidationError, Validator, CONSIGNMENT_MAX_LIBS};
+use rgb::validation::{
+    EAnchor, Failure, ResolveWitness, ValidationError, Validator, CONSIGNMENT_MAX_LIBS,
+};
 use rgb::vm::OrdOpRef;
 use rgb::{
     impl_serde_baid64, validation, BundleId, ChainNet, ContractId, Genesis, GraphSeal, OpId,
-    Operation, Opout, Schema, SchemaId, Txid,
+    Operation, Opout, Schema, SchemaId, TransitionBundle, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{StrictDeserialize, StrictDumb, StrictSerialize};
 use strict_types::TypeSystem;
 
 use super::{
-    ContainerVer, IndexedConsignment, SecretSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE,
-    ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
+    ContainerVer, SecretSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE, ASCII_ARMOR_CONTRACT,
+    ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
 use crate::contract::ContractData;
 use crate::info::ContractInfo;
@@ -289,6 +291,26 @@ impl<const TRANSFER: bool> ConsignmentExt for Consignment<TRANSFER> {
     fn bundled_witnesses(&self) -> impl Iterator<Item = &WitnessBundle> { self.bundles.iter() }
 }
 
+impl<const TRANSFER: bool> ConsignmentApi for Consignment<TRANSFER> {
+    fn schema(&self) -> &Schema { &self.schema }
+
+    fn types(&self) -> &TypeSystem { &self.types }
+
+    fn scripts(&self) -> impl Iterator<Item = &Lib> { self.scripts.iter() }
+
+    fn genesis(&self) -> &Genesis { &self.genesis }
+
+    fn bundles_info(&self) -> impl Iterator<Item = (&TransitionBundle, &EAnchor, Txid)> {
+        self.bundles.iter().map(
+            move |WitnessBundle {
+                      bundle,
+                      anchor,
+                      pub_witness,
+                  }| (bundle, anchor, pub_witness.txid()),
+        )
+    }
+}
+
 impl<const TRANSFER: bool> Consignment<TRANSFER> {
     #[inline]
     pub fn consignment_id(&self) -> ConsignmentId { self.commit_id() }
@@ -375,11 +397,9 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        let index = IndexedConsignment::new(&self);
-
         // check bundle ids listed in terminals are present in the consignment
         for bundle_id in self.terminals.keys() {
-            if !index.bundle_ids().any(|id| id == *bundle_id) {
+            if !self.bundle_ids().any(|id| id == *bundle_id) {
                 return Err(ValidationError::InvalidConsignment(Failure::Custom(format!(
                     "terminal bundle id {bundle_id} is not present in the consignment"
                 ))));
@@ -387,7 +407,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         }
 
         let status = Validator::<MemContract<MemContractState>, _, _>::validate(
-            &index,
+            &self,
             &resolver,
             chain_net,
             (&self.schema, self.contract_id()),
