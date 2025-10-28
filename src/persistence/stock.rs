@@ -29,10 +29,13 @@ use amplify::confinement::{Confined, LargeOrdSet};
 use bp::dbc::{Anchor, Proof};
 use bp::{Outpoint, Txid};
 use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
-use rgb::validation::{ResolveWitness, UnsafeHistoryMap, WitnessOrdProvider, WitnessResolverError};
+use rgb::validation::{
+    OpoutsDagData, OpoutsDagInfo, ResolveWitness, UnsafeHistoryMap, WitnessOrdProvider,
+    WitnessResolverError,
+};
 use rgb::vm::WitnessOrd;
 use rgb::{
-    validation, AssignmentType, BundleId, ChainNet, ContractId, GraphSeal, Identity,
+    validation, AssignmentType, BundleId, ChainNet, ContractId, Genesis, GraphSeal, Identity,
     KnownTransition, OpId, Operation, Opout, OutputSeal, Schema, SchemaId, SecretSeal, Transition,
     TransitionType, UnrelatedTransition,
 };
@@ -56,6 +59,13 @@ use crate::info::{ContractInfo, SchemaInfo};
 use crate::MergeRevealError;
 
 pub type ContractAssignments = HashMap<OutputSeal, HashMap<Opout, AllocatedState>>;
+
+type SortedBundlesWithDag = (Vec<WitnessBundle>, Option<OpoutsDagData>);
+
+type ConsignmentWithOptDag<const TRANSFER: bool> = (Consignment<TRANSFER>, Option<OpoutsDagData>);
+
+/// Consignment and its operations DAG
+pub type ConsignmentWithDag<const TRANSFER: bool> = (Consignment<TRANSFER>, OpoutsDagData);
 
 #[derive(Debug, Display, Error, From)]
 #[display(inner)]
@@ -597,8 +607,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<Contract, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign::<false>(contract_id, [], vec![], [], None)?;
-        Ok(consignment)
+        self.consign::<false>(contract_id, [], vec![], [], None, false)
+            .map(|(c, _)| c)
     }
 
     pub fn transfer(
@@ -609,18 +619,49 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
     ) -> Result<Transfer, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign(contract_id, outputs, secret_seals, opids, witness_id)?;
-        Ok(consignment)
+        self.consign(contract_id, outputs, secret_seals, opids, witness_id, false)
+            .map(|(c, _)| c)
+    }
+
+    pub fn transfer_with_dag(
+        &self,
+        contract_id: ContractId,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
+        witness_id: Option<Txid>,
+    ) -> Result<ConsignmentWithDag<true>, StockError<S, H, P, ConsignError>> {
+        self.consign(contract_id, outputs, secret_seals, opids, witness_id, true)
+            .map(|(c, d)| (c, d.unwrap()))
     }
 
     fn sort_bundles(
         &self,
         bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
         contract_id: ContractId,
-    ) -> Result<Vec<WitnessBundle>, StockError<S, H, P, ConsignError>> {
+        build_opouts_dag: bool,
+        genesis: &Genesis,
+    ) -> Result<SortedBundlesWithDag, StockError<S, H, P, ConsignError>> {
+        let mut dag_info = None;
+        if build_opouts_dag {
+            dag_info = Some(OpoutsDagInfo::new());
+        }
+        if let Some(ref mut dag_info) = dag_info {
+            dag_info.register_outputs(genesis, &genesis.id());
+        }
+
         let bundles_len = bundles.len();
         if bundles_len <= 1 {
-            return Ok(bundles.into_values().map(|(b, _)| b).collect());
+            let bundles = bundles.into_values().map(|(b, _)| b).collect::<Vec<_>>();
+            if let Some(ref mut dag_info) = dag_info {
+                dag_info.build_dag(
+                    &bundles
+                        .iter()
+                        .flat_map(|wb| wb.bundle.known_transitions.iter())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            return Ok((bundles, dag_info.map(|d| d.to_opouts_dag_data())));
         }
 
         // Pre-sort by witness height for efficiency
@@ -635,8 +676,14 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .map(|(i, (bundle_id, (_, _)))| (*bundle_id, i))
             .collect::<HashMap<_, _>>();
         'outer: for (i, (_, (witness_bundle, _))) in bundles_with_height.iter().enumerate() {
-            for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
+            for KnownTransition { transition, opid } in &witness_bundle.bundle.known_transitions {
+                if let Some(ref mut dag_info) = dag_info {
+                    dag_info.register_outputs(transition, opid);
+                }
                 for input in &transition.inputs {
+                    if let Some(ref mut dag_info) = dag_info {
+                        dag_info.connect_input_to_outputs_by_opid(input, opid);
+                    }
                     if input.op != contract_id {
                         let input_bundle_id = self.index.bundle_id_for_op(input.op)?;
                         // ignore missing input bundles (e.g. can happen in case of replace)
@@ -651,18 +698,25 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             }
         }
         if !needs_reordering {
-            return Ok(bundles_with_height
+            let bundles = bundles_with_height
                 .into_iter()
                 .map(|(_, (wb, _))| wb)
-                .collect());
+                .collect::<Vec<_>>();
+            return Ok((bundles, dag_info.map(|d| d.to_opouts_dag_data())));
         }
 
         // Topological sort
         let mut known_bundle_dependencies: HashMap<BundleId, HashSet<BundleId>> =
             HashMap::with_capacity(bundles_len);
         for (bundle_id, (witness_bundle, _)) in &bundles_with_height {
-            for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
+            for KnownTransition { transition, opid } in &witness_bundle.bundle.known_transitions {
+                if let Some(ref mut dag_info) = dag_info {
+                    dag_info.register_outputs(transition, opid);
+                }
                 for input in &transition.inputs {
+                    if let Some(ref mut dag_info) = dag_info {
+                        dag_info.connect_input_to_outputs_by_opid(input, opid);
+                    }
                     if input.op != contract_id {
                         let input_bundle_id = self.index.bundle_id_for_op(input.op)?;
                         if bundle_positions.contains_key(&input_bundle_id)
@@ -707,7 +761,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 return Err(StockError::BundlesInconsistency);
             }
         }
-        Ok(sorted_bundles)
+        Ok((sorted_bundles, dag_info.map(|d| d.to_opouts_dag_data())))
     }
 
     fn consign<const TRANSFER: bool>(
@@ -717,7 +771,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
-    ) -> Result<Consignment<TRANSFER>, StockError<S, H, P, ConsignError>> {
+        build_opouts_dag: bool,
+    ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
         let outputs = outputs.as_ref();
         let secret_seals = secret_seals.as_ref();
 
@@ -738,7 +793,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 .map(|opout| opout.op),
         );
 
-        self.consign_operations(contract_id, opids, secret_seals, witness_id)
+        self.consign_operations(contract_id, opids, secret_seals, witness_id, build_opouts_dag)
     }
 
     fn consign_operations<const TRANSFER: bool>(
@@ -747,7 +802,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         opids: impl IntoIterator<Item = OpId>,
         secret_seals: &[SecretSeal],
         witness_id: Option<Txid>,
-    ) -> Result<Consignment<TRANSFER>, StockError<S, H, P, ConsignError>> {
+        build_opouts_dag: bool,
+    ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut bundles = BTreeMap::<BundleId, (WitnessBundle, u32)>::new();
         let mut transitions = BTreeMap::<OpId, Transition>::new();
@@ -824,7 +880,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         let schema = self.stash.schema(genesis.schema_id)?.clone();
 
-        let sorted_bundles = self.sort_bundles(bundles, contract_id)?;
+        let (sorted_bundles, dag) =
+            self.sort_bundles(bundles, contract_id, build_opouts_dag, &genesis)?;
 
         let bundles =
             Confined::try_from_iter(sorted_bundles).map_err(|_| ConsignError::TooManyBundles)?;
@@ -844,7 +901,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         let scripts = Confined::from_iter_checked(scripts.into_values());
         // TODO: Conceal everything we do not need
 
-        Ok(Consignment {
+        let consignment = Consignment {
             version: ContainerVer::V0,
             transfer: TRANSFER,
 
@@ -855,7 +912,9 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
             types,
             scripts,
-        })
+        };
+
+        Ok((consignment, dag))
     }
 
     fn store_transaction<E: Error>(
@@ -1324,7 +1383,9 @@ mod test {
         let contract_id =
             ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                 .unwrap();
-        if let Ok(transfer) = stock.consign::<true>(contract_id, [], vec![secret_seal], [], None) {
+        if let Ok(transfer) =
+            stock.consign::<true>(contract_id, [], vec![secret_seal], [], None, false)
+        {
             println!("{transfer:?}")
         }
     }

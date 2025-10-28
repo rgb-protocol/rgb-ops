@@ -28,7 +28,7 @@ use amplify::{confinement, Wrapper};
 use chrono::Utc;
 use invoice::Amount;
 use rgb::assignments::AssignVec;
-use rgb::validation::{Scripts, ValidationError};
+use rgb::validation::{Scripts, ValidationConfig, ValidationError};
 use rgb::{
     Assign, AssignmentType, Assignments, ChainNet, ContractId, ExposedSeal, FungibleType, Genesis,
     GenesisSeal, GlobalState, GraphSeal, Identity, Layer1, MetadataError, Opout, OwnedStateSchema,
@@ -254,7 +254,12 @@ impl ContractBuilder {
             scripts,
         };
 
-        let valid_contract = contract.validate(&DumbResolver, self.chain_net, None, types)?;
+        let validation_config = ValidationConfig {
+            chain_net: self.chain_net,
+            trusted_typesystem: types,
+            ..Default::default()
+        };
+        let valid_contract = contract.validate(&DumbResolver, &validation_config)?;
 
         Ok(valid_contract)
     }

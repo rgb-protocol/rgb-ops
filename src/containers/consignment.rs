@@ -22,7 +22,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::str::FromStr;
 
@@ -33,12 +32,13 @@ use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
-    EAnchor, Failure, ResolveWitness, ValidationError, Validator, CONSIGNMENT_MAX_LIBS,
+    EAnchor, Failure, ResolveWitness, ValidationConfig, ValidationError, Validator,
+    CONSIGNMENT_MAX_LIBS,
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
-    impl_serde_baid64, validation, BundleId, ChainNet, ContractId, Genesis, GraphSeal, OpId,
-    Operation, Opout, Schema, SchemaId, TransitionBundle, Txid,
+    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, OpId, Operation,
+    Schema, SchemaId, TransitionBundle, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{StrictDeserialize, StrictDumb, StrictSerialize};
@@ -138,8 +138,6 @@ pub struct ValidConsignment<const TRANSFER: bool> {
 
 impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
     pub fn validation_status(&self) -> &validation::Status { &self.validation_status }
-
-    pub fn input_opouts(&self) -> &BTreeSet<Opout> { &self.validation_status.input_opouts }
 
     pub fn into_consignment(self) -> Consignment<TRANSFER> { self.consignment }
 
@@ -371,20 +369,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     pub fn validate(
         self,
         resolver: &impl ResolveWitness,
-        chain_net: ChainNet,
-        safe_height: Option<NonZeroU32>,
-        trusted_typesystem: TypeSystem,
-    ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
-        self.validate_with_opids(resolver, chain_net, safe_height, trusted_typesystem, bset![])
-    }
-
-    pub fn validate_with_opids(
-        self,
-        resolver: &impl ResolveWitness,
-        chain_net: ChainNet,
-        safe_height: Option<NonZeroU32>,
-        trusted_typesystem: TypeSystem,
-        trusted_op_seals: BTreeSet<OpId>,
+        validation_config: &ValidationConfig,
     ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
         if self.transfer != TRANSFER {
             return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
@@ -409,11 +394,8 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         let status = Validator::<MemContract<MemContractState>, _, _>::validate(
             &self,
             &resolver,
-            chain_net,
             (&self.schema, self.contract_id()),
-            safe_height,
-            trusted_op_seals,
-            trusted_typesystem,
+            validation_config,
         )?;
 
         Ok(ValidConsignment {

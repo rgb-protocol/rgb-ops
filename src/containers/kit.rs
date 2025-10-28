@@ -146,11 +146,14 @@ impl CommitEncode for Kit {
     }
 }
 
+#[derive(Debug)]
+pub enum KitValidationError {}
+
 impl Kit {
     #[inline]
     pub fn kit_id(&self) -> KitId { self.commit_id() }
 
-    pub fn validate(self) -> Result<ValidKit, validation::Status> {
+    pub fn validate(self) -> Result<ValidKit, KitValidationError> {
         let status = validation::Status::new();
         Ok(ValidKit {
             validation_status: status,
