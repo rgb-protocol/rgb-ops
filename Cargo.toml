@@ -17,7 +17,7 @@ homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
 keywords = ["bitcoin", "lightning", "rgb", "smart-contracts", "lnp-bp"]
 categories = ["cryptography::cryptocurrencies"]
-rust-version = "1.81.0"
+rust-version = "1.82.0"
 edition = "2021"
 license = "Apache-2.0"
 
