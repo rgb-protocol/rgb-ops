@@ -10,7 +10,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1-rc.6"
+version = "0.11.1-rc.7"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -29,7 +29,7 @@ electrum-client = "0.24.0"
 esplora-client = { version = "0.12.1", default-features = false }
 rgb-strict-encoding = "1.0.0"
 rgb-strict-types = "1.0.0"
-rgb-consensus = { version = "0.11.1-rc.6", features = [
+rgb-consensus = { version = "0.11.1-rc.7", features = [
     "rand",
     "stl",
 ] }
@@ -64,7 +64,7 @@ esplora-client = { workspace = true, optional = true }
 rgb-strict-encoding = { workspace = true }
 rgb-strict-types = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1-rc.6", path = "invoice" }
+rgb-invoicing = { version = "0.11.1-rc.7", path = "invoice" }
 rgb-aluvm = "0.11.1-alpha.2"
 base85 = "=2.0.0"
 chrono = "0.4.38"
@@ -115,10 +115,3 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.docs.rs]
 features = ["all"]
-
-[patch.crates-io]
-rgb-strict-encoding = { git = "http://github.com/rgb-protocol/rgb-strict-encoding", branch = "master" }
-rgb-ascii-armor = { git = "http://github.com/rgb-protocol/rgb-ascii-armor", branch = "master" }
-rgb-strict-types = { git = "http://github.com/rgb-protocol/rgb-strict-types", branch = "master" }
-rgb-aluvm = { git = "http://github.com/rgb-protocol/rgb-aluvm", branch = "master" }
-rgb-consensus = { git = "http://github.com/rgb-protocol/rgb-consensus", branch = "master" }
