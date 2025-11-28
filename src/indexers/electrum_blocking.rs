@@ -25,8 +25,8 @@ use std::iter;
 use std::num::NonZeroU32;
 
 use amplify::hex::FromHex;
+pub use electrum_client;
 use electrum_client::{Client, ElectrumApi, Param};
-pub use electrum_client::{Config, ConfigBuilder, Socks5Config};
 use rgb::bitcoin::{consensus, Transaction as Tx, Txid};
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};

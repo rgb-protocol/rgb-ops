@@ -24,7 +24,8 @@ use rgb::bitcoin::Txid;
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::ChainNet;
 
-use crate::indexers::esplora_blocking::{Builder, EsploraClient};
+use crate::indexers::esplora_blocking::esplora_client::Builder;
+use crate::indexers::esplora_blocking::EsploraClient;
 
 /// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
 /// It assumes that mempool.space exposes the same APIs as esplora.

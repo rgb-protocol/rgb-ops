@@ -21,8 +21,8 @@
 
 use std::num::NonZeroU32;
 
+pub use esplora_client;
 use esplora_client::BlockingClient;
-pub use esplora_client::Builder;
 use rgb::bitcoin::Txid;
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
