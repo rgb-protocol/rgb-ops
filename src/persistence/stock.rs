@@ -52,8 +52,8 @@ use crate::containers::{
     ValidContract, ValidKit, ValidTransfer, WitnessBundle,
 };
 use crate::contract::{
-    AllocatedState, BuilderError, ContractBuilder, ContractData, IssuerWrapper, SchemaWrapper,
-    TransitionBuilder,
+    AllocatedState, BuilderError, ContractBuilder, ContractData, IssuerWrapper, LinkError,
+    LinkableIssuerWrapper, LinkableSchemaWrapper, SchemaWrapper, TransitionBuilder,
 };
 use crate::info::{ContractInfo, SchemaInfo};
 use crate::MergeRevealError;
@@ -120,6 +120,10 @@ pub enum StockError<
 
     /// witness {0} can't be resolved: {1}
     WitnessUnresolved(Txid, WitnessResolverError),
+
+    #[from]
+    /// contract link is not valid: {1}
+    ContractLinkError(LinkError),
 }
 
 impl<S: StashProvider, H: StateProvider, P: IndexProvider, E: Error> From<StashError<S>>
@@ -296,6 +300,7 @@ macro_rules! stock_err_conv {
                     StockError::StateInconsistency(e) => StockError::StateInconsistency(e),
                     StockError::IndexInconsistency(e) => StockError::IndexInconsistency(e),
                     StockError::WitnessUnresolved(id, e) => StockError::WitnessUnresolved(id, e),
+                    StockError::ContractLinkError(e) => StockError::ContractLinkError(e),
                 }
             }
         }
@@ -497,8 +502,15 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<C::Wrapper<H::ContractRead<'_>>, StockError<S, H, P>> {
+        self.schema_wrapper::<C::Wrapper<_>>(contract_id)
+    }
+
+    fn schema_wrapper<'a, C: SchemaWrapper<H::ContractRead<'a>>>(
+        &'a self,
+        contract_id: ContractId,
+    ) -> Result<C, StockError<S, H, P>> {
         let contract_data = self.contract_data(contract_id)?;
-        Ok(C::Wrapper::with(contract_data))
+        Ok(C::with(contract_data))
     }
 
     /// Returns the contract data for the given contract ID
@@ -1355,6 +1367,28 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         }
 
         Ok(contract_history)
+    }
+
+    pub fn validate_contracts_link<Parent: LinkableIssuerWrapper, Child: LinkableIssuerWrapper>(
+        &self,
+        parent_contract_id: ContractId,
+        child_contract_id: ContractId,
+    ) -> Result<(), StockError<S, H, P>> {
+        let parent_links_to_child = self
+            .schema_wrapper::<<Parent as LinkableIssuerWrapper>::Wrapper<_>>(parent_contract_id)?
+            .link_to()?
+            .ok_or(LinkError::NoValue)?
+            == child_contract_id;
+        let child_links_to_parent = self
+            .schema_wrapper::<<Child as LinkableIssuerWrapper>::Wrapper<_>>(child_contract_id)?
+            .link_from()?
+            .ok_or(LinkError::NoValue)?
+            == parent_contract_id;
+        if parent_links_to_child && child_links_to_parent {
+            Ok(())
+        } else {
+            Err(LinkError::ValueMismatch.into())
+        }
     }
 }
 

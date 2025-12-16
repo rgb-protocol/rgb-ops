@@ -23,6 +23,7 @@ mod assignments;
 mod builder;
 mod data;
 mod filter;
+mod linking;
 mod merge_reveal;
 mod schema;
 pub(crate) mod resolver;
@@ -34,6 +35,7 @@ pub use data::{
     OpDirection, OwnedAllocation, RightsAllocation,
 };
 pub use filter::{AssignmentsFilter, FilterExclude, FilterIncludeAll};
+pub use linking::{LinkError, LinkableIssuerWrapper, LinkableSchemaWrapper};
 pub use merge_reveal::{MergeReveal, MergeRevealError};
 use rgb::vm::OrdOpRef;
 use rgb::{OpId, TransitionType, Txid};

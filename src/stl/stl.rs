@@ -20,9 +20,8 @@
 // limitations under the License.
 
 use invoice::{Allocation, Amount};
-use rgb::stl::bp_core_stl;
 pub use rgb::stl::{
-    aluvm_stl, commit_verify_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT,
+    aluvm_stl, bp_core_stl, commit_verify_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT,
     LIB_ID_RGB_LOGIC,
 };
 use rgb::Schema;
@@ -172,5 +171,18 @@ mod test {
     fn storage_lib_id() {
         let lib = rgb_storage_stl();
         assert_eq!(lib.id().to_string(), LIB_ID_RGB_STORAGE);
+    }
+
+    #[test]
+    fn rgb_contract_id_standard_types() {
+        use amplify::hex::FromHex;
+        use rgb::stl::rgb_contract_id_stl;
+
+        let standard_types = StandardTypes::with(rgb_contract_id_stl());
+        let exp_sem_id = "9f082c493ac802a2bac5dddc0b227c20af94d468c448cf1a5a21e0bdc2f53a32";
+        assert_eq!(
+            standard_types.get("RGBCommit.ContractId"),
+            SemId::from_hex(exp_sem_id).unwrap()
+        );
     }
 }
