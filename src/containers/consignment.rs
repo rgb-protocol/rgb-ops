@@ -37,8 +37,8 @@ use rgb::validation::{
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
-    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, OpId, Operation,
-    Schema, SchemaId, TransitionBundle, Txid,
+    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, Operation, Schema,
+    SchemaId, TransitionBundle, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{StrictDeserialize, StrictDumb, StrictSerialize};
@@ -347,23 +347,6 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             bundles: none!(),
             scripts: self.scripts,
         }
-    }
-
-    pub fn replace_transitions_input_ops(&self) -> BTreeSet<OpId> {
-        self.bundles
-            .iter()
-            .flat_map(|b| b.bundle().known_transitions.as_unconfined())
-            .filter_map(|kt| {
-                if kt.transition.transition_type.is_replace() {
-                    Some(&kt.transition)
-                } else {
-                    None
-                }
-            })
-            .flat_map(|t| t.inputs.iter())
-            .filter(|i| i.ty.is_asset())
-            .map(|i| i.op)
-            .collect::<BTreeSet<_>>()
     }
 
     pub fn validate(

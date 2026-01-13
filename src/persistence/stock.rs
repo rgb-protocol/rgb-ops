@@ -856,18 +856,13 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             };
         }
 
-        let is_asset_replacement =
-            |tt: TransitionType, at: AssignmentType| -> bool { tt.is_replace() && at.is_asset() };
-
         // 2. Collect all state transitions between terminals and genesis
         let mut ids = vec![];
         let mut seen_ids = HashSet::new();
         for transition in transitions.values() {
-            ids.extend(transition.inputs().iter().map(|input| {
-                (input.op, is_asset_replacement(transition.transition_type, input.ty))
-            }));
+            ids.extend(transition.inputs().iter().map(|input| input.op));
         }
-        while let Some((id, asset_replacement)) = ids.pop() {
+        while let Some(id) = ids.pop() {
             if id == contract_id {
                 continue; // we skip genesis since it will be present anywhere
             }
@@ -875,11 +870,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 continue; // we skip seen IDs to avoid re-processing duplicates
             }
             let transition = self.transition(id)?;
-            if !asset_replacement {
-                ids.extend(transition.inputs().iter().map(|input| {
-                    (input.op, is_asset_replacement(transition.transition_type, input.ty))
-                }));
-            }
+            ids.extend(transition.inputs().iter().map(|input| input.op));
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
             if let Some((ref mut wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition.clone())?;
