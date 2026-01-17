@@ -27,6 +27,7 @@ use std::num::NonZeroU32;
 use amplify::hex::FromHex;
 pub use electrum_client;
 use electrum_client::{Client, ElectrumApi, Param};
+use rgb::bitcoin::constants::ChainHash;
 use rgb::bitcoin::{consensus, Transaction as Tx, Txid};
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
@@ -45,33 +46,50 @@ impl ResolveWitness for ElectrumClient {
             .block_header(0)
             .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?
             .block_hash();
-        if chain_net.genesis_block_hash() != block_hash {
+        let chain_hash = ChainHash::from_genesis_block_hash(block_hash);
+        if chain_net.chain_hash() != chain_hash {
             return Err(WitnessResolverError::WrongChainNet);
         }
         // check the electrum server has the required functionality (verbose
         // transactions)
         let txid = match chain_net {
             ChainNet::BitcoinMainnet => {
-                "33e794d097969002ee05d336686fc03c9e15a597c1b9827669460fac98799036"
+                Some("33e794d097969002ee05d336686fc03c9e15a597c1b9827669460fac98799036")
             }
             ChainNet::BitcoinTestnet3 => {
-                "5e6560fd518aadbed67ee4a55bdc09f19e619544f5511e9343ebba66d2f62653"
+                Some("5e6560fd518aadbed67ee4a55bdc09f19e619544f5511e9343ebba66d2f62653")
             }
             ChainNet::BitcoinTestnet4 => {
-                "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"
+                Some("7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e")
             }
             ChainNet::BitcoinSignet => {
-                "8153034f45e695453250a8fb7225a5e545144071d8ed7b0d3211efa1f3c92ad8"
+                Some("8153034f45e695453250a8fb7225a5e545144071d8ed7b0d3211efa1f3c92ad8")
             }
+            ChainNet::BitcoinSignetCustom(_) => None,
             ChainNet::BitcoinRegtest => {
-                "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                Some("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b")
             }
             _ => return Err(WitnessResolverError::WrongChainNet),
         };
-        if let Err(e) = self.inner.raw_call("blockchain.transaction.get", vec![
-            Param::String(txid.to_string()),
-            Param::Bool(true),
-        ]) {
+        let txid = if let Some(txid) = txid {
+            txid.to_string()
+        } else {
+            self.inner
+                .raw_call("blockchain.transaction.id_from_pos", vec![
+                    Param::Usize(1),
+                    Param::Usize(0),
+                    Param::Bool(false),
+                ])
+                .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?
+                .get("tx_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or(WitnessResolverError::InvalidResolverData)?
+        };
+        if let Err(e) = self
+            .inner
+            .raw_call("blockchain.transaction.get", vec![Param::String(txid), Param::Bool(true)])
+        {
             if !e
                 .to_string()
                 .contains("genesis block coinbase is not considered an ordinary transaction")

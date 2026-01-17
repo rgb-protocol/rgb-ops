@@ -23,6 +23,7 @@ use std::num::NonZeroU32;
 
 pub use esplora_client;
 use esplora_client::BlockingClient;
+use rgb::bitcoin::constants::ChainHash;
 use rgb::bitcoin::Txid;
 use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
@@ -40,7 +41,8 @@ impl ResolveWitness for EsploraClient {
             .inner
             .get_block_hash(0)
             .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?;
-        if chain_net.genesis_block_hash() != block_hash {
+        let chain_hash = ChainHash::from_genesis_block_hash(block_hash);
+        if chain_net.chain_hash() != chain_hash {
             return Err(WitnessResolverError::WrongChainNet);
         }
         Ok(())

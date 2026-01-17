@@ -23,6 +23,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use indexmap::IndexMap;
+use rgb::bitcoin::constants::ChainHash;
 use rgb::bitcoin::hashes::{hash160, sha256};
 use rgb::bitcoin::key::{TweakedPublicKey, UntweakedPublicKey};
 use rgb::bitcoin::{KnownHrp, Network, PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
@@ -92,6 +93,7 @@ pub enum XChainNet<T> {
     BitcoinTestnet3(T),
     BitcoinTestnet4(T),
     BitcoinSignet(T),
+    BitcoinSignetCustom { chain_hash: ChainHash, data: T },
     BitcoinRegtest(T),
     LiquidMainnet(T),
     LiquidTestnet(T),
@@ -104,6 +106,9 @@ impl<T> XChainNet<T> {
             ChainNet::BitcoinTestnet3 => XChainNet::BitcoinTestnet3(data),
             ChainNet::BitcoinTestnet4 => XChainNet::BitcoinTestnet4(data),
             ChainNet::BitcoinSignet => XChainNet::BitcoinSignet(data),
+            ChainNet::BitcoinSignetCustom(chain_hash) => {
+                XChainNet::BitcoinSignetCustom { chain_hash, data }
+            }
             ChainNet::BitcoinRegtest => XChainNet::BitcoinRegtest(data),
             ChainNet::LiquidMainnet => XChainNet::LiquidMainnet(data),
             ChainNet::LiquidTestnet => XChainNet::LiquidTestnet(data),
@@ -126,6 +131,9 @@ impl<T> XChainNet<T> {
             XChainNet::BitcoinTestnet3(_) => ChainNet::BitcoinTestnet3,
             XChainNet::BitcoinTestnet4(_) => ChainNet::BitcoinTestnet4,
             XChainNet::BitcoinSignet(_) => ChainNet::BitcoinSignet,
+            XChainNet::BitcoinSignetCustom { chain_hash, .. } => {
+                ChainNet::BitcoinSignetCustom(*chain_hash)
+            }
             XChainNet::BitcoinRegtest(_) => ChainNet::BitcoinRegtest,
             XChainNet::LiquidMainnet(_) => ChainNet::LiquidMainnet,
             XChainNet::LiquidTestnet(_) => ChainNet::LiquidTestnet,
@@ -138,6 +146,7 @@ impl<T> XChainNet<T> {
             | XChainNet::BitcoinTestnet3(inner)
             | XChainNet::BitcoinTestnet4(inner)
             | XChainNet::BitcoinSignet(inner)
+            | XChainNet::BitcoinSignetCustom { data: inner, .. }
             | XChainNet::BitcoinRegtest(inner)
             | XChainNet::LiquidMainnet(inner)
             | XChainNet::LiquidTestnet(inner) => inner,
@@ -149,9 +158,10 @@ impl<T> XChainNet<T> {
     pub fn address_network(&self) -> KnownHrp {
         match self.chain_network() {
             ChainNet::BitcoinMainnet => KnownHrp::Mainnet,
-            ChainNet::BitcoinTestnet3 | ChainNet::BitcoinTestnet4 | ChainNet::BitcoinSignet => {
-                KnownHrp::Testnets
-            }
+            ChainNet::BitcoinTestnet3
+            | ChainNet::BitcoinTestnet4
+            | ChainNet::BitcoinSignet
+            | ChainNet::BitcoinSignetCustom(_) => KnownHrp::Testnets,
             ChainNet::BitcoinRegtest => KnownHrp::Regtest,
             ChainNet::LiquidMainnet => KnownHrp::Mainnet,
             ChainNet::LiquidTestnet => KnownHrp::Testnets,

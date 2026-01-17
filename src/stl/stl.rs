@@ -42,16 +42,16 @@ use crate::LIB_NAME_RGB_OPS;
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_STORAGE: &str =
-    "stl:9sGk23sr-gVlm5lh-km_EG2x-NSXC_zk-jv5VmWL-8rhyjIA#easy-impact-wolf";
+    "stl:kq27E8oA-y1GkC8K-O2Qdi6M-PUq8~r4-wqr96RC-vElKzRo#truck-opera-stop";
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_CONTRACT: &str =
-    "stl:EmO~FVyw-REYTWMy-M_VR5d~-Wrwqoq7-fLAFwSz-9AYhR7M#cover-flash-polo";
+    "stl:BVTW_R~C-ynXP70a-OlhwXa8-SbXktmr-u912vW1-ztIyxhk#mayor-ballet-flood";
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
-    "stl:HNePR5_o-3F_0jaN-E95tPQg-GWaM2wG-QWZwE9K-oq1XiNw#lunar-present-torso";
+    "stl:xOUnp_AH-ntElNCK-S38ZNkV-yns3Sz3-_LezFuk-s9qFHvw#imagine-taboo-life";
 
 /// Generates strict type library representation of RGB Ops data types.
 pub fn rgb_ops_stl() -> TypeLib {
