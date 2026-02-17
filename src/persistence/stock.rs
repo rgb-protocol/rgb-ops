@@ -37,7 +37,7 @@ use rgb::vm::WitnessOrd;
 use rgb::{
     validation, AssignmentType, BundleId, ChainNet, ContractId, Genesis, GraphSeal, Identity,
     KnownTransition, OpId, Operation, Opout, OutputSeal, Schema, SchemaId, SecretSeal, Transition,
-    TransitionType, UnrelatedTransition,
+    TransitionType, TxoSeal, UnrelatedTransition,
 };
 use strict_types::FieldName;
 
@@ -187,6 +187,15 @@ pub enum ConsignError {
 
     /// the spent state from transition {1} inside bundle {0} is concealed.
     Concealed(BundleId, OpId),
+
+    /// the requested contract is unrelated to other inputs.
+    UnrelatedContract(ContractId),
+
+    /// the transition {1} inside bundle {0} is concealed.
+    ConcealedTransition(BundleId, OpId),
+
+    /// the transition {1} inside bundle {0} appears after its child.
+    UnorderedTransition(BundleId, OpId),
 }
 
 impl<S: StashProvider, H: StateProvider, P: IndexProvider> From<ConsignError>
@@ -818,7 +827,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut bundles = BTreeMap::<BundleId, (WitnessBundle, u32)>::new();
-        let mut transitions = BTreeMap::<OpId, Transition>::new();
+        let mut parent_opids = Vec::<OpId>::new();
         let mut bundle_sec_seals: BTreeMap<BundleId, BTreeSet<SecretSeal>> = BTreeMap::new();
         for opid in opids {
             if opid == contract_id {
@@ -837,32 +846,37 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 }
             }
 
-            transitions.insert(opid, transition.clone());
+            parent_opids.extend(transition.inputs().iter().map(|input| input.op));
 
             // 1.4. Collect secret seals for this bundle to add to the consignment terminals
             for typed_assignments in transition.assignments.values() {
-                for index in 0..typed_assignments.len_u16() {
-                    let seal = typed_assignments.to_confidential_seals()[index as usize];
+                for seal in typed_assignments.to_confidential_seals() {
                     if secret_seals.contains(&seal) {
                         bundle_sec_seals.entry(bundle_id).or_default().insert(seal);
                     }
                 }
             }
 
-            if let Some((ref mut wbundle, _)) = bundles.get_mut(&bundle_id) {
+            if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition.clone())?;
             } else {
                 bundles.insert(bundle_id, self.witness_bundle(bundle_id, opid)?);
             };
         }
+        self.consign_bundles(contract_id, bundles, parent_opids, bundle_sec_seals, build_opouts_dag)
+    }
 
+    fn consign_bundles<const TRANSFER: bool>(
+        &self,
+        contract_id: ContractId,
+        mut bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
+        mut parent_opids: Vec<OpId>,
+        bundle_sec_seals: BTreeMap<BundleId, BTreeSet<SecretSeal>>,
+        build_opouts_dag: bool,
+    ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
         // 2. Collect all state transitions between terminals and genesis
-        let mut ids = vec![];
         let mut seen_ids = HashSet::new();
-        for transition in transitions.values() {
-            ids.extend(transition.inputs().iter().map(|input| input.op));
-        }
-        while let Some(id) = ids.pop() {
+        while let Some(id) = parent_opids.pop() {
             if id == contract_id {
                 continue; // we skip genesis since it will be present anywhere
             }
@@ -870,9 +884,9 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 continue; // we skip seen IDs to avoid re-processing duplicates
             }
             let transition = self.transition(id)?;
-            ids.extend(transition.inputs().iter().map(|input| input.op));
+            parent_opids.extend(transition.inputs().iter().map(|input| input.op));
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
-            if let Some((ref mut wbundle, _)) = bundles.get_mut(&bundle_id) {
+            if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition.clone())?;
             } else {
                 bundles.insert(bundle_id, self.witness_bundle(bundle_id, id)?);
@@ -918,6 +932,128 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         };
 
         Ok((consignment, dag))
+    }
+
+    pub fn transfer_from_fascia(
+        &self,
+        contract_id: ContractId,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
+        fascia: &Fascia,
+    ) -> Result<Consignment<true>, StockError<S, H, P, ConsignError>> {
+        self.consign_from_fascia(contract_id, outputs, secret_seals, opids, fascia, false)
+            .map(|(c, _)| c)
+    }
+
+    pub fn transfer_from_fascia_with_dag(
+        &self,
+        contract_id: ContractId,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
+        fascia: &Fascia,
+    ) -> Result<ConsignmentWithDag<true>, StockError<S, H, P, ConsignError>> {
+        self.consign_from_fascia(contract_id, outputs, secret_seals, opids, fascia, true)
+            .map(|(c, d)| (c, d.expect("build_opouts_dag=true")))
+    }
+
+    fn consign_from_fascia(
+        &self,
+        contract_id: ContractId,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seals: impl AsRef<[SecretSeal]>,
+        opids: impl IntoIterator<Item = OpId>,
+        fascia: &Fascia,
+        build_opouts_dag: bool,
+    ) -> Result<ConsignmentWithOptDag<true>, StockError<S, H, P, ConsignError>> {
+        let mut contract_bundle = fascia
+            .bundles
+            .get(&contract_id)
+            .ok_or(ConsignError::UnrelatedContract(contract_id))?
+            .clone();
+        let bundle_id = contract_bundle.bundle_id();
+        let all_bundle_opids = contract_bundle.input_map_opids();
+        let bundle_revealed_opids = contract_bundle.known_transitions_opids();
+        let opids = opids.into_iter().collect::<HashSet<_>>();
+        let secret_seals = secret_seals
+            .as_ref()
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let outputs = outputs.as_ref().iter().collect::<HashSet<_>>();
+        let witness_id = fascia.witness_id();
+        let is_requested_transition = |kt: &KnownTransition| {
+            if opids.contains(&kt.opid) {
+                return true; // 1. explicitly requested opids
+            }
+            for typed_assigns in kt.transition.assignments.values() {
+                for index in 0..typed_assigns.len_u16() {
+                    match typed_assigns
+                        .revealed_seal_at(index)
+                        .expect("cycling indexes")
+                    {
+                        Some(s) => {
+                            if outputs.contains(&OutputSeal::with(witness_id, s.vout())) {
+                                return true; // 2. outputs (witness)
+                            }
+                        }
+                        None => {
+                            if secret_seals.contains(
+                                &typed_assigns
+                                    .confidential_seal_at(index)
+                                    .expect("cycling indexes"),
+                            ) {
+                                return true; // 3. secret seals (blinded)
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        };
+        // filter only required transitions in the bundle
+        // process transitions in reverse order since children must appear after parents
+        let mut required_opids = bset![];
+        let mut rev_bundle_transitions = vec![];
+        for known_transition in contract_bundle.known_transitions.into_iter().rev() {
+            if required_opids.contains(&known_transition.opid)
+                || is_requested_transition(&known_transition)
+            {
+                required_opids.remove(&known_transition.opid);
+                required_opids.extend(known_transition.transition.inputs.iter().map(|o| o.op));
+                rev_bundle_transitions.push(known_transition);
+            }
+        }
+        if let Some(opid) = required_opids.intersection(&all_bundle_opids).next() {
+            if let Some(opid) = required_opids.intersection(&bundle_revealed_opids).next() {
+                return Err(ConsignError::ConcealedTransition(bundle_id, *opid).into());
+            }
+            return Err(ConsignError::UnorderedTransition(bundle_id, *opid).into());
+        }
+        rev_bundle_transitions.reverse();
+        contract_bundle.known_transitions = Confined::from_checked(rev_bundle_transitions);
+        let pub_witness = fascia.seal_witness.public.clone();
+        let seal_witness = fascia.seal_witness.clone();
+        let anchor = Anchor::new(
+            seal_witness
+                .merkle_block
+                .into_merkle_proof(contract_id.into())
+                .map_err(|_| ConsignError::UnrelatedContract(contract_id))?,
+            seal_witness.dbc_proof,
+        );
+        let bundle_sec_seals = if !secret_seals.is_empty() {
+            bmap! {bundle_id => secret_seals}
+        } else {
+            bmap! {}
+        };
+        self.consign_bundles(
+            contract_id,
+            bmap! {bundle_id => (WitnessBundle::with(pub_witness, anchor, contract_bundle), u32::MAX)},
+            required_opids.into_iter().collect::<Vec<_>>(),
+            bundle_sec_seals,
+            build_opouts_dag,
+        )
     }
 
     fn store_transaction<E: Error>(
