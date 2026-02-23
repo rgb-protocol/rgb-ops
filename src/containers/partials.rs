@@ -26,6 +26,7 @@ use strict_encoding::{
 };
 
 use super::SealWitness;
+use crate::containers::PubWitness;
 use crate::LIB_NAME_RGB_OPS;
 
 /// A batch of state transitions under different contracts which are associated
@@ -70,7 +71,7 @@ impl Batch {
 /// Structure exported from a PSBT for merging into the stash. It contains a set
 /// of finalized state transitions (under multiple contracts), packed into
 /// bundles, and anchored to a single layer 1 transaction.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Getters)]
 #[derive(StrictType, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_OPS)]
 #[cfg_attr(
@@ -79,8 +80,8 @@ impl Batch {
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
 pub struct Fascia {
-    pub seal_witness: SealWitness,
-    pub bundles: NonEmptyOrdMap<ContractId, TransitionBundle, U24>,
+    seal_witness: SealWitness,
+    bundles: NonEmptyOrdMap<ContractId, TransitionBundle, U24>,
 }
 
 impl StrictDumb for Fascia {
@@ -95,9 +96,24 @@ impl StrictSerialize for Fascia {}
 impl StrictDeserialize for Fascia {}
 
 impl Fascia {
+    pub fn new(
+        seal_witness: SealWitness,
+        bundles: NonEmptyOrdMap<ContractId, TransitionBundle, U24>,
+    ) -> Self {
+        Self {
+            seal_witness,
+            bundles,
+        }
+    }
+
     pub fn witness_id(&self) -> Txid { self.seal_witness.public.txid() }
 
     pub fn into_bundles(self) -> impl IntoIterator<Item = (ContractId, TransitionBundle)> {
         self.bundles.into_iter()
+    }
+
+    /// Replace the fascia's pub_witness with the one in input
+    pub fn update_pub_witness(&mut self, pub_witness: PubWitness) {
+        self.seal_witness.public = pub_witness;
     }
 }

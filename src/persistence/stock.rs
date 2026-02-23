@@ -48,8 +48,8 @@ use super::{
     StateInconsistency, StateProvider, StateReadProvider, StateWriteProvider, StoreTransaction,
 };
 use crate::containers::{
-    Consignment, ContainerVer, Contract, Fascia, Kit, SecretSeals, Transfer, ValidConsignment,
-    ValidContract, ValidKit, ValidTransfer, WitnessBundle,
+    Consignment, ContainerVer, Contract, Fascia, Kit, SealWitness, SecretSeals, Transfer,
+    ValidConsignment, ValidContract, ValidKit, ValidTransfer, WitnessBundle,
 };
 use crate::contract::{
     AllocatedState, BuilderError, ContractBuilder, ContractData, IssuerWrapper, LinkError,
@@ -968,7 +968,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         build_opouts_dag: bool,
     ) -> Result<ConsignmentWithOptDag<true>, StockError<S, H, P, ConsignError>> {
         let mut contract_bundle = fascia
-            .bundles
+            .bundles()
             .get(&contract_id)
             .ok_or(ConsignError::UnrelatedContract(contract_id))?
             .clone();
@@ -1033,14 +1033,16 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         }
         rev_bundle_transitions.reverse();
         contract_bundle.known_transitions = Confined::from_checked(rev_bundle_transitions);
-        let pub_witness = fascia.seal_witness.public.clone();
-        let seal_witness = fascia.seal_witness.clone();
+        let SealWitness {
+            public: pub_witness,
+            merkle_block,
+            dbc_proof,
+        } = fascia.seal_witness().clone();
         let anchor = Anchor::new(
-            seal_witness
-                .merkle_block
+            merkle_block
                 .into_merkle_proof(contract_id.into())
                 .map_err(|_| ConsignError::UnrelatedContract(contract_id))?,
-            seal_witness.dbc_proof,
+            dbc_proof,
         );
         let bundle_sec_seals = if !secret_seals.is_empty() {
             bmap! {bundle_id => secret_seals}
@@ -1142,7 +1144,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     ) -> Result<(), StockError<S, H, P, FasciaError>> {
         self.store_transaction(move |stash, state, index| {
             let witness_id = fascia.witness_id();
-            stash.consume_witness(&fascia.seal_witness)?;
+            stash.consume_witness(fascia.seal_witness())?;
 
             for (contract_id, bundle) in fascia.into_bundles() {
                 bundle
