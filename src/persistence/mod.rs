@@ -55,7 +55,7 @@ pub use state::{
     StateReadProvider, StateWriteProvider,
 };
 pub use stock::{
-    ComposeError, ConsignError, ContractAssignments, FasciaError, InputError as StockInputError,
+    ComposeError, ConsignError, ConsignmentWithDag, ContractAssignments, FasciaError, InputError as StockInputError,
     Stock, StockError, StockErrorAll, StockErrorMem, UpdateRes,
 };
 
