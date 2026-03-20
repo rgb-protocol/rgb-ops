@@ -1,11 +1,14 @@
 name: Lints
 
 on:
+  push:
+    branches:
+      - master
+    tags:
+      - '*'
   pull_request:
     branches:
       - master
-      - develop
-      - 'v[0-9]+.[0-9]+'
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,8 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          toolchain: nightly
           components: rustfmt
       - name: Formatting
         run: cargo +nightly fmt --all -- --check
@@ -24,20 +28,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-      - name: Formatting
+      - name: Linting
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
   doc:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rust-docs
-      - name: Formatting
-        run: cargo +nightly doc --workspace --all-features
+          toolchain: nightly
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features
   typos:
     runs-on: ubuntu-latest
     steps:
