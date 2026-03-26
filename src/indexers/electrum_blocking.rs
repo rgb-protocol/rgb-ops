@@ -87,12 +87,17 @@ impl ResolveWitness for ElectrumClient {
                 .ok_or(WitnessResolverError::InvalidResolverData)?
         };
         // check the transaction can be fetched before probing verbose support
-        self.inner
-            .raw_call("blockchain.transaction.get", vec![
-                Param::String(txid.clone()),
-                Param::Bool(false),
-            ])
-            .map_err(|_| WitnessResolverError::WrongChainNet)?;
+        if let Err(e) = self.inner.raw_call("blockchain.transaction.get", vec![
+            Param::String(txid.clone()),
+            Param::Bool(false),
+        ]) {
+            if !e
+                .to_string()
+                .contains("genesis block coinbase is not considered an ordinary transaction")
+            {
+                return Err(WitnessResolverError::WrongChainNet);
+            }
+        }
         if let Err(e) = self
             .inner
             .raw_call("blockchain.transaction.get", vec![Param::String(txid), Param::Bool(true)])
