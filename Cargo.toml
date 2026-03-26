@@ -10,7 +10,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1-rc.8"
+version = "0.11.1-rc.9"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -29,7 +29,7 @@ electrum-client = "0.24.0"
 esplora-client = { version = "0.12.1", default-features = false }
 rgb-strict-encoding = "1.0.1"
 rgb-strict-types = "1.0.1"
-rgb-consensus = { version = "0.11.1-rc.8", features = [
+rgb-consensus = { version = "0.11.1-rc.9", features = [
     "rand",
     "stl",
 ] }
@@ -64,7 +64,7 @@ esplora-client = { workspace = true, optional = true }
 rgb-strict-encoding = { workspace = true }
 rgb-strict-types = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1-rc.8", path = "invoice" }
+rgb-invoicing = { version = "0.11.1-rc.9", path = "invoice" }
 rgb-aluvm = "0.11.1-rc.2"
 base85 = "=2.0.0"
 chrono = "0.4.38"
@@ -115,6 +115,3 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.docs.rs]
 features = ["all"]
-
-[patch.crates-io]
-rgb-consensus = { git = "https://github.com/rgb-protocol/rgb-consensus", branch = "master" }
