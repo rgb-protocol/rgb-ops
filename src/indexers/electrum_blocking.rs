@@ -65,7 +65,7 @@ impl ResolveWitness for ElectrumClient {
             ChainNet::BitcoinSignet => {
                 Some("8153034f45e695453250a8fb7225a5e545144071d8ed7b0d3211efa1f3c92ad8")
             }
-            ChainNet::BitcoinSignetCustom(_) => None,
+            ChainNet::BitcoinSignetCustom => None,
             ChainNet::BitcoinRegtest => {
                 Some("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b")
             }
