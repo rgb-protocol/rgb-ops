@@ -86,6 +86,13 @@ impl ResolveWitness for ElectrumClient {
                 .map(|s| s.to_string())
                 .ok_or(WitnessResolverError::InvalidResolverData)?
         };
+        // check the transaction can be fetched before probing verbose support
+        self.inner
+            .raw_call("blockchain.transaction.get", vec![
+                Param::String(txid.clone()),
+                Param::Bool(false),
+            ])
+            .map_err(|_| WitnessResolverError::WrongChainNet)?;
         if let Err(e) = self
             .inner
             .raw_call("blockchain.transaction.get", vec![Param::String(txid), Param::Bool(true)])
