@@ -1487,8 +1487,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         for id in self.contracts_assigning([outpoint])? {
             let state = self.contract_assignments_for(id, [outpoint])?;
             for opid in state
-                .iter()
-                .flat_map(|(_, assigns)| assigns.keys().map(|opout| opout.op))
+                .values()
+                .flat_map(|assigns| assigns.keys().map(|opout| opout.op))
             {
                 let bundle_id = self.index.bundle_id_for_op(opid)?;
                 self._check_bundle_history(&bundle_id, safe_height, &mut contract_history)?;
