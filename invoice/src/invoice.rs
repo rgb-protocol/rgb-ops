@@ -228,6 +228,14 @@ pub enum Beneficiary {
     WitnessVout(Pay2Vout, Option<UntweakedPublicKey>),
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+pub enum Encryption {
+    #[default]
+    Required,
+    Unsupported,
+    Optional,
+}
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 #[non_exhaustive]
 pub struct RgbInvoice {
@@ -239,6 +247,8 @@ pub struct RgbInvoice {
     pub beneficiary: XChainNet<Beneficiary>,
     /// UTC unix timestamp
     pub expiry: Option<i64>,
+    pub public_key: Option<String>,
+    pub encryption: Encryption,
     pub unknown_query: IndexMap<String, String>,
 }
 

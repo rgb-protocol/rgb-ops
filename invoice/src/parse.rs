@@ -24,6 +24,7 @@ use std::io::{Cursor, Write};
 use std::num::ParseIntError;
 use std::str::FromStr;
 
+use amplify::hex::{FromHex, ToHex};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use fluent_uri::encoding::encoder::Query;
 use fluent_uri::encoding::EStr;
@@ -37,11 +38,15 @@ use rgb::bitcoin::{Address, Network, PubkeyHash, ScriptBuf, ScriptHash, WPubkeyH
 use rgb::{ChainNet, ContractId, SchemaId, SecretSeal};
 use strict_types::FieldName;
 
-use crate::invoice::{Beneficiary, InvoiceState, Pay2Vout, RgbInvoice, RgbTransport, XChainNet};
+use crate::invoice::{
+    Beneficiary, Encryption, InvoiceState, Pay2Vout, RgbInvoice, RgbTransport, XChainNet,
+};
 
 const OMITTED: &str = "~";
 const ASSIGNMENT: &str = "assignment_name";
 const EXPIRY: &str = "expiry";
+const PUBKEY: &str = "pk";
+const ENCRYPTION: &str = "enc";
 const ENDPOINTS: &str = "endpoints";
 const TRANSPORT_SEP: char = ',';
 const TRANSPORT_HOST_SEP: &str = "://";
@@ -111,6 +116,12 @@ pub enum InvoiceParseError {
     /// invalid expiration timestamp {0}.
     InvalidExpiration(String),
 
+    /// invalid public key {0}.
+    InvalidPublicKey(String),
+
+    /// invalid encryption preference {0}.
+    InvalidEncryption(String),
+
     /// invalid network {0}
     InvalidNetwork(Network),
 
@@ -134,6 +145,8 @@ impl RgbInvoice {
         self.expiry.is_some()
             || self.assignment_name.is_some()
             || !self.transports.is_empty()
+            || self.public_key.is_some()
+            || self.encryption != Encryption::Required
             || !self.unknown_query.is_empty()
     }
 
@@ -144,6 +157,18 @@ impl RgbInvoice {
         }
         if let Some(expiry) = self.expiry {
             query_params.insert(EXPIRY.to_string(), expiry.to_string());
+        }
+        if let Some(public_key) = &self.public_key {
+            query_params.insert(PUBKEY.to_string(), public_key.to_owned());
+        }
+        match self.encryption {
+            Encryption::Required => {}
+            Encryption::Unsupported => {
+                query_params.insert(ENCRYPTION.to_string(), "0".to_string());
+            }
+            Encryption::Optional => {
+                query_params.insert(ENCRYPTION.to_string(), "1".to_string());
+            }
         }
         if !self.transports.is_empty() {
             let mut transports: Vec<String> = vec![];
@@ -522,6 +547,25 @@ impl FromStr for RgbInvoice {
             expiry = Some(timestamp);
         }
 
+        let mut public_key = None;
+        if let Some(pk) = query_params.shift_remove(PUBKEY) {
+            let bytes = Vec::<u8>::from_hex(&pk)
+                .map_err(|_| InvoiceParseError::InvalidPublicKey(pk.clone()))?;
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| InvoiceParseError::InvalidPublicKey(pk.clone()))?;
+            public_key = Some(bytes.to_hex());
+        }
+
+        let encryption = if let Some(enc) = query_params.shift_remove(ENCRYPTION) {
+            match enc.as_str() {
+                "0" => Encryption::Unsupported,
+                "1" => Encryption::Optional,
+                _ => return Err(InvoiceParseError::InvalidEncryption(enc)),
+            }
+        } else {
+            Encryption::Required
+        };
         Ok(RgbInvoice {
             transports,
             contract,
@@ -530,6 +574,8 @@ impl FromStr for RgbInvoice {
             beneficiary,
             assignment_state,
             expiry,
+            public_key,
+            encryption,
             unknown_query: query_params,
         })
     }
@@ -682,6 +728,55 @@ mod test {
                            4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?expiry=six";
         let result = RgbInvoice::from_str(invoice_str);
         assert!(matches!(result, Err(InvoiceParseError::InvalidExpiration(_))));
+
+        // with public key
+        let public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let invoice_str = format!(
+            "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+             XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+             4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?{PUBKEY}={public_key}"
+        );
+        let invoice = RgbInvoice::from_str(&invoice_str).unwrap();
+        assert_eq!(invoice.public_key, Some(public_key.to_owned()));
+        assert_eq!(invoice.to_string(), invoice_str);
+
+        // bad public key
+        let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+                           XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+                           4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?pk=bad";
+        let result = RgbInvoice::from_str(invoice_str);
+        assert!(matches!(result, Err(InvoiceParseError::InvalidPublicKey(_))));
+
+        // default encryption preference when missing
+        let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+                           XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+                           4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa";
+        let invoice = RgbInvoice::from_str(invoice_str).unwrap();
+        assert_eq!(invoice.encryption, Encryption::Required);
+        assert_eq!(invoice.to_string(), invoice_str);
+
+        // explicit encryption unsupported
+        let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+                           XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+                           4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?enc=0";
+        let invoice = RgbInvoice::from_str(invoice_str).unwrap();
+        assert_eq!(invoice.encryption, Encryption::Unsupported);
+        assert_eq!(invoice.to_string(), invoice_str);
+
+        // explicit encryption optional
+        let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+                           XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+                           4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?enc=1";
+        let invoice = RgbInvoice::from_str(invoice_str).unwrap();
+        assert_eq!(invoice.encryption, Encryption::Optional);
+        assert_eq!(invoice.to_string(), invoice_str);
+
+        // invalid encryption preference
+        let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\
+                           XvmU3d4_nQQ8S7oagbXi07x5vjMm7P~ERukQNX6SC4M/BF/bc:utxob:\
+                           4vm1CX2Z-K8hMo59-e7dgGBS-Jka7mYn-Xe~yP85-yUiHHxr-aVlYa?enc=2";
+        let result = RgbInvoice::from_str(invoice_str);
+        assert!(matches!(result, Err(InvoiceParseError::InvalidEncryption(_))));
 
         // with bad query parameter
         let invoice_str = "rgb:3NoxsLum-cRPebTV-gTZY8qY-KS20lx7-OqgtBls-t7muan4/\

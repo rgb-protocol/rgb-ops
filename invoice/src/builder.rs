@@ -21,10 +21,11 @@
 
 use std::str::FromStr;
 
+use amplify::hex::ToHex;
 use rgb::{ContractId, SchemaId};
 use strict_types::FieldName;
 
-use crate::invoice::{Beneficiary, InvoiceState, RgbInvoice, RgbTransport, XChainNet};
+use crate::invoice::{Beneficiary, Encryption, InvoiceState, RgbInvoice, RgbTransport, XChainNet};
 use crate::{Allocation, Amount, CoinAmount, NonFungible, Precision, TransportParseError};
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -41,6 +42,8 @@ impl RgbInvoiceBuilder {
             assignment_state: None,
             beneficiary: beneficiary.into(),
             expiry: None,
+            public_key: None,
+            encryption: Encryption::default(),
             unknown_query: none!(),
         })
     }
@@ -115,6 +118,16 @@ impl RgbInvoiceBuilder {
 
     pub fn set_expiry_timestamp(mut self, expiry: i64) -> Self {
         self.0.expiry = Some(expiry);
+        self
+    }
+
+    pub fn set_public_key(mut self, public_key: [u8; 32]) -> Self {
+        self.0.public_key = Some(public_key.to_hex());
+        self
+    }
+
+    pub fn set_encryption(mut self, encryption: Encryption) -> Self {
+        self.0.encryption = encryption;
         self
     }
 
