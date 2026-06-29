@@ -32,8 +32,9 @@ use strict_types::typesys::SystemBuilder;
 use strict_types::{LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
 
 use super::{
-    AssetSpec, AttachmentType, BurnMeta, ContractSpec, ContractTerms, EmbeddedMedia, Error,
-    IssueMeta, MediaType, RejectListUrl, TokenData, LIB_NAME_RGB_CONTRACT,
+    AssetSpec, AttachmentType, BlockNumber, BridgeLocation, BurnMeta, BurnReason, ContractSpec,
+    ContractTerms, EmbeddedMedia, Error, IssueMeta, MediaType, RejectListUrl, TokenData,
+    LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
 };
 use crate::containers::{Contract, Transfer};
 use crate::stl::ProofOfReserves;
@@ -43,6 +44,14 @@ use crate::LIB_NAME_RGB_OPS;
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_CONTRACT: &str =
     "stl:BVTW_R~C-ynXP70a-OlhwXa8-SbXktmr-u912vW1-ztIyxhk#mayor-ballet-flood";
+
+/// Strict types id for the library carrying the BFA bridge types.
+pub const LIB_ID_RGB_BRIDGE: &str =
+    "stl:LARKHTS4-deDTLV4-PN5teYT-DSUMpG3-9yC~KGb-DLBKsNw#package-slogan-invest";
+
+/// Strict types id for the library carrying the burn types.
+pub const LIB_ID_RGB_BURN: &str =
+    "stl:TqrElAR0-4sPucVX-mOfyc8S-GZtt8oY-v96lm8R-r6pCNeI#gray-brain-clever";
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
@@ -92,6 +101,29 @@ pub fn rgb_contract_stl() -> TypeLib {
     .unwrap()
 }
 
+/// Generates the strict type library of the BFA bridge types.
+///
+/// Must be included in the `StandardTypes` system of any schema referencing
+/// `"RGBBridge.BridgeLocation"` or `"RGBBridge.BlockNumber"`.
+pub fn rgb_bridge_stl() -> TypeLib {
+    LibBuilder::with(libname!(LIB_NAME_RGB_BRIDGE), [std_stl().to_dependency_types()])
+        .transpile::<BridgeLocation>()
+        .transpile::<BlockNumber>()
+        .compile()
+        .unwrap()
+}
+
+/// Generates the strict type library of the burn types.
+///
+/// Must be included in the `StandardTypes` system of any schema referencing
+/// `"RGBBurn.BurnReason"`.
+pub fn rgb_burn_stl() -> TypeLib {
+    LibBuilder::with(libname!(LIB_NAME_RGB_BURN), [std_stl().to_dependency_types()])
+        .transpile::<BurnReason>()
+        .compile()
+        .unwrap()
+}
+
 #[derive(Debug)]
 pub struct StandardTypes {
     sys: SymbolicSys,
@@ -99,9 +131,15 @@ pub struct StandardTypes {
 }
 
 impl StandardTypes {
-    pub fn with(lib: TypeLib) -> Self {
-        Self::try_with([std_stl(), bitcoin_stl(), rgb_contract_stl(), lib])
-            .expect("error in standard RGBContract type system")
+    pub fn with(lib: TypeLib) -> Self { Self::new([lib]) }
+
+    pub fn new(libs: impl IntoIterator<Item = TypeLib>) -> Self {
+        Self::try_with(
+            [std_stl(), bitcoin_stl(), rgb_contract_stl()]
+                .into_iter()
+                .chain(libs),
+        )
+        .expect("error in standard RGBContract type system")
     }
 
     #[allow(clippy::result_large_err)]
@@ -145,9 +183,76 @@ mod test {
     }
 
     #[test]
+    fn bridge_lib_id() {
+        let lib = rgb_bridge_stl();
+        assert_eq!(lib.id().to_string(), LIB_ID_RGB_BRIDGE);
+    }
+
+    #[test]
+    fn burn_lib_id() {
+        let lib = rgb_burn_stl();
+        assert_eq!(lib.id().to_string(), LIB_ID_RGB_BURN);
+    }
+
+    #[test]
     fn std_lib_id() {
         let lib = rgb_ops_stl();
         assert_eq!(lib.id().to_string(), LIB_ID_RGB_OPS);
+    }
+
+    #[test]
+    fn bridge_location_strict_val_roundtrip() {
+        use amplify::confinement::TinyString;
+        use strict_types::StrictSerialize;
+
+        use crate::stl::BridgeLocation;
+
+        let location = BridgeLocation::Evm {
+            chain_id: 1,
+            address: TinyString::try_from("0xdeadbeef".to_owned()).unwrap(),
+        };
+        let serialized = location.to_strict_serialized::<{ usize::MAX }>().unwrap();
+
+        let mut builder = SystemBuilder::new();
+        for lib in [std_stl(), rgb_bridge_stl()] {
+            builder = builder.import(lib).unwrap();
+        }
+        let sys = builder.finalize().unwrap();
+        let sem_id = *sys.resolve("RGBBridge.BridgeLocation").unwrap();
+        let types = sys.as_types().extract([sem_id]).unwrap();
+        let strict_val = types
+            .strict_deserialize_type(sem_id, &serialized)
+            .unwrap()
+            .as_val()
+            .clone();
+        assert_eq!(BridgeLocation::from_strict_val_unchecked(&strict_val), location);
+    }
+
+    /// Pins `BurnReason::from_strict_val_unchecked` against the type system: the value comes
+    /// back as a wrapped byte array, and the unwrapping has to match.
+    #[test]
+    fn burn_reason_strict_val_roundtrip() {
+        use amplify::Bytes32;
+        use strict_types::StrictSerialize;
+
+        use crate::stl::BurnReason;
+
+        let reason = BurnReason::from(Bytes32::from_array([0xab; 32]));
+        let serialized = reason.to_strict_serialized::<{ usize::MAX }>().unwrap();
+
+        let mut builder = SystemBuilder::new();
+        for lib in [std_stl(), rgb_burn_stl()] {
+            builder = builder.import(lib).unwrap();
+        }
+        let sys = builder.finalize().unwrap();
+        let sem_id = *sys.resolve("RGBBurn.BurnReason").unwrap();
+        let types = sys.as_types().extract([sem_id]).unwrap();
+        let strict_val = types
+            .strict_deserialize_type(sem_id, &serialized)
+            .unwrap()
+            .as_val()
+            .clone();
+        assert_eq!(BurnReason::from_strict_val_unchecked(&strict_val), reason);
     }
 
     #[test]

@@ -31,15 +31,21 @@ use error::Error;
 pub use invoice::LIB_NAME_RGB_CONTRACT;
 pub use mime::{MediaRegName, MediaType};
 pub use specs::{
-    Article, AssetSpec, Attachment, AttachmentName, AttachmentType, BurnMeta, ContractSpec,
-    ContractTerms, Details, EmbeddedMedia, IssueMeta, Name, RejectListUrl, RicardianContract,
-    Ticker, TokenData,
+    Article, AssetSpec, Attachment, AttachmentName, AttachmentType, BlockNumber, BridgeLocation,
+    BurnMeta, BurnReason, ContractSpec, ContractTerms, Details, EmbeddedMedia, IssueMeta, Name,
+    RejectListUrl, RicardianContract, Ticker, TokenData,
 };
 pub use stl::{
-    aluvm_stl, bitcoin_stl, commit_verify_stl, rgb_commit_stl, rgb_contract_stl, rgb_logic_stl,
-    rgb_ops_stl, StandardTypes, LIB_ID_RGB_COMMIT, LIB_ID_RGB_CONTRACT, LIB_ID_RGB_LOGIC,
-    LIB_ID_RGB_OPS,
+    aluvm_stl, bitcoin_stl, commit_verify_stl, rgb_bridge_stl, rgb_burn_stl, rgb_commit_stl,
+    rgb_contract_stl, rgb_logic_stl, rgb_ops_stl, StandardTypes, LIB_ID_RGB_BRIDGE,
+    LIB_ID_RGB_BURN, LIB_ID_RGB_COMMIT, LIB_ID_RGB_CONTRACT, LIB_ID_RGB_LOGIC, LIB_ID_RGB_OPS,
 };
+
+/// Library name for the strict-type library carrying the BFA bridge types.
+pub const LIB_NAME_RGB_BRIDGE: &str = "RGBBridge";
+
+/// Library name for the strict-type library carrying the burn types.
+pub const LIB_NAME_RGB_BURN: &str = "RGBBurn";
 
 pub const LIB_NAME_RGB_OPS: &str = "RGBStd";
 pub const LIB_NAME_RGB_STORAGE: &str = "RGBStorage";

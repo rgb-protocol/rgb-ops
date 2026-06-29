@@ -33,7 +33,8 @@ use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use rgb::bitcoin::Transaction as Tx;
 use rgb::commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
-    EAnchor, Failure, ResolveWitness, SchemaRules, ValidationConfig, ValidationError, Validator,
+    EAnchor, ExternalAnchor, Failure, ResolveWitness, SchemaRules, ValidationConfig,
+    ValidationError, Validator,
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
@@ -381,6 +382,51 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             (rules.schema(), self.contract_id()),
             validation_config,
         )?;
+
+        Ok(ValidConsignment {
+            validation_status: status,
+            consignment: self,
+        })
+    }
+
+    /// Variant of [`Self::validate`] for BFA (Bridged Fungible Asset) consignments.
+    ///
+    /// Runs the two-phase validation: Phase 1 (`validate_deterministic`) collects pending external
+    /// anchors (EVM mint events); the caller resolves them via `anchor_resolver` (return
+    /// `true` to mark an anchor resolved); Phase 2 (`finalize_with_resolver`) checks that all
+    /// anchors were resolved before returning the validated consignment.
+    pub fn validate_bfa<F>(
+        self,
+        rules: &SchemaRules,
+        resolver: &impl ResolveWitness,
+        validation_config: &ValidationConfig,
+        mut anchor_resolver: F,
+    ) -> Result<ValidConsignment<TRANSFER>, ValidationError>
+    where
+        F: FnMut(&ExternalAnchor) -> bool,
+    {
+        if self.transfer != TRANSFER {
+            return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
+                "invalid consignment type"
+            ))));
+        }
+
+        let mut validator =
+            Validator::<FilteredContractState<UnfilteredContractState>, _>::validate_deterministic(
+                &self,
+                rules,
+                (rules.schema(), self.contract_id()),
+                validation_config,
+            )?;
+
+        let pending = validator.pending_external_anchors();
+        for anchor in &pending {
+            if anchor_resolver(anchor) {
+                validator.record_anchor_resolution(anchor);
+            }
+        }
+
+        let status = validator.finalize_with_resolver(resolver)?;
 
         Ok(ValidConsignment {
             validation_status: status,

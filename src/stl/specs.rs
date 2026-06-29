@@ -28,7 +28,7 @@ use std::str::FromStr;
 
 use amplify::ascii::AsciiString;
 use amplify::confinement::{
-    Confined, NonEmptyString, NonEmptyVec, SmallBlob, SmallOrdSet, SmallString, U8,
+    Confined, NonEmptyString, NonEmptyVec, SmallBlob, SmallOrdSet, SmallString, TinyString, U8,
 };
 use amplify::Bytes32;
 use invoice::{Precision, TokenIndex};
@@ -37,9 +37,12 @@ use strict_encoding::{
     DefaultBasedStrictDumb, InvalidRString, RString, StrictDecode, StrictDeserialize, StrictDumb,
     StrictEncode, StrictSerialize, StrictType, TypedWrite,
 };
+use strict_types::value::EnumTag;
 use strict_types::StrictVal;
 
-use super::{MediaType, ProofOfReserves, LIB_NAME_RGB_CONTRACT};
+use super::{
+    MediaType, ProofOfReserves, LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
+};
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 #[derive(StrictType, StrictEncode, StrictDecode, StrictDumb)]
@@ -632,5 +635,88 @@ impl_ident_subtype!(RejectListUrl);
 impl RejectListUrl {
     pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
         RejectListUrl::from_str(&value.unwrap_string()).unwrap()
+    }
+}
+
+/// Identifies the location of the bridge smart contract on the external chain.
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE, tags = order, dumb = {
+    BridgeLocation::Evm { chain_id: strict_dumb!(), address: strict_dumb!() }
+})]
+pub enum BridgeLocation {
+    /// A bridge smart contract deployed on an EVM-compatible chain.
+    Evm {
+        /// EIP-155 chain ID of the chain the bridge contract is deployed on. External-anchor
+        /// resolvers must check it against the chain they are connected to.
+        chain_id: u64,
+        /// Address of the bridge contract.
+        address: TinyString,
+    },
+}
+
+impl StrictSerialize for BridgeLocation {}
+impl StrictDeserialize for BridgeLocation {}
+
+impl BridgeLocation {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        let (tag, content) = value.unwrap_union();
+        let is_evm = matches!(tag, EnumTag::Ord(0))
+            || matches!(tag, EnumTag::Name(ref n) if n.as_str() == "evm");
+        if is_evm {
+            let chain_id = content.unwrap_struct("chainId").unwrap_uint::<u64>();
+            let address = TinyString::try_from(content.unwrap_struct("address").unwrap_string())
+                .expect("invalid `bridgeLocation` EVM address string");
+            BridgeLocation::Evm { chain_id, address }
+        } else {
+            panic!("unexpected `BridgeLocation` union tag {tag}");
+        }
+    }
+}
+
+/// A block number on the external (bridged) chain.
+#[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From)]
+#[wrapper(Deref, Display, FromStr)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE)]
+pub struct BlockNumber(u64);
+
+impl StrictSerialize for BlockNumber {}
+impl StrictDeserialize for BlockNumber {}
+
+impl BlockNumber {
+    pub const ZERO: Self = BlockNumber(0);
+
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        value.unwrap_uint::<u64>().into()
+    }
+}
+
+/// A 32-byte commitment to the reason for a burn.
+#[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From)]
+#[wrapper(Deref, BorrowSlice, Display, FromStr, Hex)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BURN)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate", transparent)
+)]
+pub struct BurnReason(
+    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::byte_array"))]
+    Bytes32,
+);
+
+impl StrictSerialize for BurnReason {}
+impl StrictDeserialize for BurnReason {}
+
+impl BurnReason {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        Self(
+            value
+                .unwrap_bytes()
+                .try_into()
+                .expect("invalid burn reason"),
+        )
     }
 }
