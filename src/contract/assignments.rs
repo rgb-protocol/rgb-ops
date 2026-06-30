@@ -32,6 +32,7 @@ use rgb::{
 };
 use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
+#[cfg(feature = "legacy")]
 use crate::LIB_NAME_RGB_OPS;
 
 /// Trait used by contract state. Unlike [`rgb::ExposedState`] it doesn't allow
@@ -58,8 +59,8 @@ impl KnownState for RevealedData {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS)]
+#[cfg_attr(feature = "legacy", derive(StrictType, StrictDumb, StrictDecode))]
+#[cfg_attr(feature = "legacy", strict_type(lib = LIB_NAME_RGB_OPS))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -72,8 +73,8 @@ pub struct WitnessInfo {
 
 #[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Copy, Clone, Eq, Hash, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS)]
+#[cfg_attr(feature = "legacy", derive(StrictType, StrictDumb, StrictDecode))]
+#[cfg_attr(feature = "legacy", strict_type(lib = LIB_NAME_RGB_OPS))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -121,7 +122,7 @@ impl<State: KnownState> Ord for OutputAssignment<State> {
 impl<State: KnownState> OutputAssignment<State> {
     /// # Panics
     ///
-    /// If the processing is done on invalid stash data, the seal is
+    /// If the processing is done on invalid store data, the seal is
     /// witness-based and the anchor chain doesn't match the seal chain.
     pub fn with_witness<Seal: ExposedSeal>(
         seal: Seal,
@@ -143,7 +144,7 @@ impl<State: KnownState> OutputAssignment<State> {
 
     /// # Panics
     ///
-    /// If the processing is done on invalid stash data, the seal is
+    /// If the processing is done on invalid store data, the seal is
     /// witness-based and the anchor chain doesn't match the seal chain.
     pub fn with_no_witness<Seal: ExposedSeal>(
         seal: Seal,
@@ -156,7 +157,7 @@ impl<State: KnownState> OutputAssignment<State> {
         OutputAssignment {
             opout: Opout::new(opid, ty, no),
             seal: seal.to_output_seal().expect(
-                "processing contract from unverified/invalid stash: seal must have txid \
+                "processing contract from unverified/invalid store: seal must have txid \
                  information since it comes from genesis",
             ),
             state,

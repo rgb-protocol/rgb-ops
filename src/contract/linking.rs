@@ -18,8 +18,7 @@
 
 use rgb::ContractId;
 
-use crate::contract::{IssuerWrapper, SchemaWrapper};
-use crate::persistence::ContractStateRead;
+use crate::contract::{ContractStateRead, IssuerWrapper, SchemaWrapper};
 
 /// Error derived from contract linking validation procedure
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]

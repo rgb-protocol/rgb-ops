@@ -50,9 +50,8 @@ use super::{
     ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
 use crate::containers::anchors::SpvProof;
-use crate::contract::ContractData;
+use crate::contract::{ContractData, FilteredContractState, UnfilteredContractState};
 use crate::info::ContractInfo;
-use crate::persistence::{MemContract, MemContractState};
 use crate::{SecretSeal, LIB_NAME_RGB_OPS};
 
 pub type Transfer = Consignment<true>;
@@ -84,7 +83,7 @@ impl<C: ConsignmentExt> ConsignmentExt for &C {
 /// Consignment identifier.
 #[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, From)]
 #[wrapper(Deref, BorrowSlice, Hex, Index, RangeOps)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[derive(StrictType, StrictDumb, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_OPS)]
 pub struct ConsignmentId(
     #[from]
@@ -135,7 +134,7 @@ pub struct ValidConsignment<const TRANSFER: bool> {
 }
 
 impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
-    #[cfg(all(feature = "fs", feature = "serde"))]
+    #[cfg(any(all(feature = "fs", feature = "serde"), test))]
     pub(crate) fn from_parts(
         consignment: Consignment<TRANSFER>,
         validation_status: validation::Status,
@@ -168,9 +167,13 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
     ///
     /// The rules must be the ones the consignment was validated against;
     /// [`crate::persistence::Stock::consignment_data`] takes them from the
-    /// stash so that callers cannot pair a consignment with foreign rules.
-    pub(crate) fn build_contract_data(&self, rules: &SchemaRules) -> ContractData<MemContract> {
-        let mut unfiltered = MemContractState::new(rules.schema(), self.consignment.contract_id());
+    /// store so that callers cannot pair a consignment with foreign rules.
+    pub(crate) fn build_contract_data(
+        &self,
+        rules: &SchemaRules,
+    ) -> ContractData<FilteredContractState> {
+        let mut unfiltered =
+            UnfilteredContractState::new(rules.schema(), self.consignment.contract_id());
         unfiltered.add_operation(OrdOpRef::Genesis(&self.consignment.genesis));
 
         let filter = if TRANSFER {
@@ -198,7 +201,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
             HashMap::new()
         };
 
-        let state = MemContract::new(filter, BTreeSet::new(), unfiltered);
+        let state = FilteredContractState::new(filter, BTreeSet::new(), unfiltered);
         let info = ContractInfo::with(&self.consignment.genesis);
         ContractData {
             state,
@@ -220,7 +223,7 @@ impl<const TRANSFER: bool> Deref for ValidConsignment<TRANSFER> {
 /// blockchain or current state of the lightning channel).
 ///
 /// All consignments-related procedures, including validation or merging
-/// consignments data into stash or schema-specific data storage, must start
+/// consignments data into the store or schema-specific data storage, must start
 /// with `endpoints` and process up to the genesis.
 #[derive(Clone, Debug, PartialEq, Display)]
 #[display(AsciiArmor::to_ascii_armored_string)]
@@ -314,12 +317,17 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     #[inline]
     pub fn schema_id(&self) -> SchemaId { self.genesis.schema_id }
 
-    pub fn reveal_terminal_seals<E>(
+    /// Reveals the terminal seals whose secret `f` can answer for.
+    ///
+    /// `bundle_ids` must carry the id of each bundle, aligned with
+    /// [`Self::bundles`]: every caller has the ids computed already, so they
+    /// are taken rather than re-hashed here.
+    pub(crate) fn reveal_terminal_seals<E>(
         mut self,
+        bundle_ids: impl IntoIterator<Item = BundleId>,
         f: impl Fn(SecretSeal) -> Result<Option<GraphSeal>, E>,
     ) -> Result<Self, E> {
-        for witness_bundle in self.bundles.iter_mut() {
-            let bundle_id = witness_bundle.bundle().bundle_id();
+        for (witness_bundle, bundle_id) in self.bundles.iter_mut().zip(bundle_ids) {
             let Some(terminal_seals) = self.terminals.get_mut(&bundle_id) else {
                 continue;
             };
@@ -367,7 +375,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        let status = Validator::<MemContract<MemContractState>, _, _>::validate(
+        let status = Validator::<FilteredContractState<UnfilteredContractState>, _, _>::validate(
             &self,
             rules,
             &resolver,

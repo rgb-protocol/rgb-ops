@@ -19,8 +19,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::contract::ContractData;
-use crate::persistence::ContractStateRead;
+use crate::contract::{ContractData, ContractStateRead};
 use crate::validation::{SchemaDefinition, SchemaRules, Scripts, TypeLibs};
 use crate::Schema;
 

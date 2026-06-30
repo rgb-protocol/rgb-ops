@@ -27,23 +27,17 @@ pub use rgb::stl::{
 use rgb::validation::TypeLibs;
 use rgb::Schema;
 pub use strict_types::stl::bitcoin_stl;
-use strict_types::stl::{bitcoin_tx_stl, std_stl, strict_types_stl};
+use strict_types::stl::{std_stl, strict_types_stl};
 use strict_types::typesys::SystemBuilder;
 use strict_types::{LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
 
 use super::{
     AssetSpec, AttachmentType, BurnMeta, ContractSpec, ContractTerms, EmbeddedMedia, Error,
-    IssueMeta, MediaType, RejectListUrl, TokenData, LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STORAGE,
+    IssueMeta, MediaType, RejectListUrl, TokenData, LIB_NAME_RGB_CONTRACT,
 };
 use crate::containers::{Contract, Transfer};
-use crate::persistence::{MemIndex, MemStash, MemState};
 use crate::stl::ProofOfReserves;
 use crate::LIB_NAME_RGB_OPS;
-
-/// Strict types id for the library providing standard data types which may be
-/// used in RGB smart contracts.
-pub const LIB_ID_RGB_STORAGE: &str =
-    "stl:e2fdotzE-xsU8WNF-c5w5qXV-ezAm3_D-ylZIfi_-v2a~Yp4#amanda-quiz-protect";
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
@@ -94,29 +88,6 @@ pub fn rgb_contract_stl() -> TypeLib {
     .transpile::<ProofOfReserves>()
     .transpile::<RejectListUrl>()
     .transpile::<TokenData>()
-    .compile()
-    .unwrap()
-}
-
-/// Generates strict type library providing standard storage for state, contract
-/// state and index.
-pub fn rgb_storage_stl() -> TypeLib {
-    // TODO: wait for fix in strict_types to use LibBuilder::with
-    #[allow(deprecated)]
-    LibBuilder::new(libname!(LIB_NAME_RGB_STORAGE), [
-        std_stl().to_dependency(),
-        strict_types_stl().to_dependency(),
-        commit_verify_stl().to_dependency(),
-        bitcoin_tx_stl().to_dependency(),
-        bp_core_stl().to_dependency(),
-        aluvm_stl().to_dependency(),
-        rgb_commit_stl().to_dependency(),
-        rgb_logic_stl().to_dependency(),
-        rgb_ops_stl().to_dependency(),
-    ])
-    .transpile::<MemIndex>()
-    .transpile::<MemStash>()
-    .transpile::<MemState>()
     .compile()
     .unwrap()
 }
@@ -177,12 +148,6 @@ mod test {
     fn std_lib_id() {
         let lib = rgb_ops_stl();
         assert_eq!(lib.id().to_string(), LIB_ID_RGB_OPS);
-    }
-
-    #[test]
-    fn storage_lib_id() {
-        let lib = rgb_storage_stl();
-        assert_eq!(lib.id().to_string(), LIB_ID_RGB_STORAGE);
     }
 
     #[test]

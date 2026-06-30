@@ -41,6 +41,13 @@ fn asset_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// The schema definition of the almost-default schema, as a stock must hold it
+/// to accept the fixtures below: a v1 consignment carries only its schema id.
+#[cfg(all(feature = "fs", feature = "serde", feature = "sqlite"))]
+pub(crate) fn almost_default_schema_definition() -> rgb::validation::SchemaDefinition {
+    rgb::validation::SchemaDefinition::new(almost_default_schema(), none!(), none!())
+}
+
 /// A schema with almost default fields.
 fn almost_default_schema() -> rgb::Schema {
     rgb::Schema {

@@ -23,7 +23,6 @@
 //! The main type of container is the [`Consignment`], containing information about partial state
 //! of a *single contract*, extending from its genesis up to certain contract endpoints.
 
-mod seal;
 mod anchors;
 mod consignment;
 mod util;
@@ -44,7 +43,6 @@ pub use consignment::{
 pub use file::{FileContent, LoadError, UniversalFile};
 pub use partials::{Batch, Fascia};
 pub use rgb::BuilderSeal;
-pub use seal::VoutSeal;
 pub use util::{ConsignmentVer, TerminalSeals};
 
 pub const ASCII_ARMOR_SCHEMA: &str = "Schema";

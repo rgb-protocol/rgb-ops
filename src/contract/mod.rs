@@ -26,6 +26,7 @@ mod filter;
 mod linking;
 mod merge_reveal;
 mod schema;
+mod state;
 pub(crate) mod resolver;
 
 pub use assignments::{KnownState, OutputAssignment, WitnessInfo};
@@ -40,19 +41,25 @@ pub use merge_reveal::{MergeReveal, MergeRevealError};
 use rgb::vm::OrdOpRef;
 use rgb::{OpId, TransitionType, Txid};
 pub use schema::{IssuerWrapper, SchemaWrapper};
+pub(crate) use state::{global_ord, GlobalStateIter};
+pub use state::{
+    ContractStateRead, FilteredContractState, GlobalStateReadError, UnfilteredContractState,
+    UnfilteredGlobalState,
+};
 
+#[cfg(feature = "legacy")]
 use crate::LIB_NAME_RGB_OPS;
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS, tags = order)]
+#[cfg_attr(feature = "legacy", derive(StrictType, StrictDumb, StrictDecode))]
+#[cfg_attr(feature = "legacy", strict_type(lib = LIB_NAME_RGB_OPS, tags = order))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
 pub enum OpWitness {
-    #[strict_type(dumb)]
+    #[cfg_attr(feature = "legacy", strict_type(dumb))]
     Genesis,
     Transition(Txid, TransitionType),
 }
@@ -79,8 +86,8 @@ impl OpWitness {
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS)]
+#[cfg_attr(feature = "legacy", derive(StrictType, StrictDumb, StrictDecode))]
+#[cfg_attr(feature = "legacy", strict_type(lib = LIB_NAME_RGB_OPS))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),

@@ -69,7 +69,7 @@ pub enum MergeRevealError {
 /// The resulting structure will depend on the reveal status of both of the
 /// variant. And the most revealed condition among the two will be selected
 /// Usage: prevent hiding already known previous state data by merging
-/// incoming new consignment in stash.
+/// incoming new consignment in the store.
 ///
 /// The following conversion logic is intended by this trait:
 ///

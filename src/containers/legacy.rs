@@ -100,7 +100,7 @@ impl PubWitness {
 /// [`crate::persistence::MemStashV0`]); converting it to V1 requires the full
 /// transaction, so it goes through [`SealWitnessV0::into_v1`].
 #[derive(Clone, Eq, PartialEq, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[derive(StrictType, StrictDumb, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_OPS)]
 pub struct SealWitnessV0 {
     pub public: PubWitness,
@@ -117,7 +117,7 @@ impl SealWitnessV0 {
     ) -> Result<SealWitness, IntoV1Error> {
         Ok(SealWitness {
             tx: self.public.into_v1(resolver)?,
-            merkle_block: self.merkle_block,
+            mpc_merkle_block: self.merkle_block,
             dbc_proof: self.dbc_proof,
             spv_proof: None,
         })

@@ -19,59 +19,63 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Module defines API used by providers of persistent data for RGB contracts.
+//! Data persistence layer for RGB contracts.
 //!
-//! These data include:
-//! 1. Stash: a consensus-critical data for client-side-validation which must be preserved and
-//!    backed up.
-//! 2. Contract state, updated with each enclosed consignment and disclosure.
-//! 3. Index over stash, which simplifies construction of new consignments.
+//! All persistent data is exposed through a single backend-agnostic
+//! [`RgbStore`] trait, driven by [`Stock`]. The data comprises:
+//! 1. Consensus-critical client-side-validation data.
+//! 2. Contract state, updated with each consumed consignment and fascia.
+//! 3. Indexes to simplify operations.
 //!
-//! Contract state and index data can be re-computed from the stash in case of
-//! loss or corruption, while stash can't be recovered unless it was backed up.
+//! # Concurrency
+//!
+//! A [`Stock`] owns its store exclusively - the SQLite store is deliberately
+//! not `Clone` - so two stocks over the same database are two connections and
+//! never two owners of one transaction. A store transaction belongs to the
+//! connection it was opened on, which is why sharing one is not offered.
+//!
+//! Readers are free to run alongside each other: [`Stock::contract_state`] and
+//! the other read accessors take `&self` and hold no state, so several threads
+//! may read one stock at once, while mutating it needs `&mut self` and is
+//! therefore excluded for as long as any reader lives.
+//!
+//! Writers run **one at a time**, and that is enforced rather than assumed. A
+//! unit of work takes the database's write lock upfront (`BEGIN IMMEDIATE`)
+//! and makes every read it decides a write from *inside* that transaction, so
+//! two writers - two stocks in this process, or two processes - are serialized
+//! by SQLite instead of interleaved, and neither can commit on the strength of
+//! a view the other has since invalidated. A writer which finds the lock taken
+//! waits out the connection's busy timeout and is then told
+//! [`Busy`](sqlite::SqliteError::Busy) rather than made to wait forever.
+//!
+//! What a unit of work has to wait on *outside* the database - a resolver
+//! reaching an indexer over the network - is done before that transaction
+//! opens, so no write lock is held across a network round-trip. Reads made out
+//! there only pick what to ask about; what gets stored on the strength of the
+//! answers is decided again from reads made under the lock.
 
 mod stock;
-mod stash;
-mod state;
-mod index;
+mod error;
+mod store;
+mod codec;
+mod reader;
 
-mod memory;
-#[cfg(feature = "fs")]
-pub mod fs;
 #[cfg(feature = "legacy")]
 mod legacy;
 #[cfg(feature = "sqlite")]
-pub mod sql;
+pub mod sqlite;
 
 pub use aluvm::library::{Lib, LibId};
-pub use index::{
-    Index, IndexError, IndexInconsistency, IndexProvider, IndexReadError, IndexReadProvider,
-    IndexWriteError, IndexWriteProvider,
+pub use codec::{decode, encode};
+pub use error::{
+    ComposeError, ConsignError, ContractStateError, DataError, FasciaError, Inconsistency,
+    InputError as StockInputError, StockError, StockErrorAll,
 };
 #[cfg(feature = "legacy")]
-pub use legacy::MemStashV0;
-pub use memory::{
-    MemContract, MemContractState, MemError, MemGlobalState, MemIndex, MemStash, MemState,
+pub use legacy::{LegacyFsStore, MemIndexV0, MemStashV0, MemStateV0};
+pub use reader::ContractStateSnapshot;
+pub use stock::{ConsignmentWithDag, ContractAssignments, RetrievedSpvProofs, Stock, UpdateRes};
+pub use store::{
+    AllocKind, AllocSeal, AllocationFilter, AllocationRow, AllocationWrite, GlobalStateRow,
+    GlobalStateWrite, RgbStore, TxBegin, TxMode, Visibility,
 };
-pub use stash::{
-    ProviderError as StashProviderError, Stash, StashDataError, StashError, StashInconsistency,
-    StashProvider, StashReadProvider, StashWriteProvider,
-};
-pub use state::{
-    ContractStateRead, ContractStateWrite, State, StateError, StateInconsistency, StateProvider,
-    StateReadProvider, StateWriteProvider,
-};
-pub use stock::{
-    ComposeError, ConsignError, ContractAssignments, FasciaError, InputError as StockInputError,
-    Stock, StockError, StockErrorAll, UpdateRes,
-};
-
-pub trait StoreTransaction {
-    type TransactionErr: std::error::Error;
-
-    fn begin_transaction(&mut self) -> Result<(), Self::TransactionErr>;
-
-    fn commit_transaction(&mut self) -> Result<(), Self::TransactionErr>;
-
-    fn rollback_transaction(&mut self);
-}

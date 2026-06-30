@@ -32,9 +32,10 @@ use rgb::{
 use strict_encoding::{FieldName, StrictDecode, StrictDumb, StrictEncode};
 use strict_types::StrictVal;
 
-use crate::contract::{AssignmentsFilter, KnownState, OutputAssignment, WitnessInfo};
+use crate::contract::{
+    AssignmentsFilter, ContractStateRead, KnownState, OutputAssignment, WitnessInfo,
+};
 use crate::info::ContractInfo;
-use crate::persistence::ContractStateRead;
 use crate::validation::SchemaRules;
 use crate::LIB_NAME_RGB_OPS;
 
@@ -43,6 +44,9 @@ use crate::LIB_NAME_RGB_OPS;
 pub enum ContractError {
     /// field name {0} is unknown to the contract schema
     FieldNameUnknown(FieldName),
+
+    /// unable to read the contract state: {0}
+    StateRead(String),
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Display, From)]
@@ -223,6 +227,13 @@ impl ContractOp {
     }
 }
 
+/// Converts a state read failure into a [`ContractError`].
+fn read_err<A: KnownState, E: Error>(
+    res: Result<OutputAssignment<A>, E>,
+) -> Result<OutputAssignment<A>, ContractError> {
+    res.map_err(|e| ContractError::StateRead(e.to_string()))
+}
+
 /// Data of a contract.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct ContractData<S: ContractStateRead> {
@@ -258,7 +269,7 @@ impl<S: ContractStateRead> ContractData<S> {
             .get(&type_id)
             .expect("cannot find type ID in schema global types");
         self.state
-            .global(type_id)
+            .global_all(type_id)
             .expect("cannot find type ID in global state")
             .map(|entry| {
                 self.rules
@@ -267,47 +278,54 @@ impl<S: ContractStateRead> ContractData<S> {
                         global_details.global_state_schema.sem_id,
                         entry.borrow().data().as_slice(),
                     )
-                    .expect("unvalidated contract data in stash")
+                    .expect("unvalidated contract data in store")
                     .unbox()
             })
     }
 
-    fn extract_state<'c, A, U, E: Error>(
+    fn extract_state<'c, A, U, E: Error + 'c>(
         &'c self,
         state: impl IntoIterator<Item = Result<OutputAssignment<A>, E>> + 'c,
         type_id: AssignmentType,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = OutputAssignment<U>> + 'c, ContractError>
+    ) -> impl Iterator<Item = Result<OutputAssignment<U>, ContractError>> + 'c
     where
         A: Clone + KnownState + 'c,
         U: From<A> + KnownState + 'c,
     {
-        Ok(self
-            .extract_state_unfiltered(state, type_id)?
-            .filter(move |outp| filter.should_include(outp.seal, outp.witness)))
+        self.extract_state_unfiltered::<A, U, E>(state, type_id)
+            .filter(move |res| match res {
+                Ok(outp) => filter.should_include(outp.seal, outp.witness),
+                // read failures are never filtered out
+                Err(_) => true,
+            })
     }
 
-    fn extract_state_unfiltered<'c, A, U, E: Error>(
+    fn extract_state_unfiltered<'c, A, U, E: Error + 'c>(
         &'c self,
         state: impl IntoIterator<Item = Result<OutputAssignment<A>, E>> + 'c,
         type_id: AssignmentType,
-    ) -> Result<impl Iterator<Item = OutputAssignment<U>> + 'c, ContractError>
+    ) -> impl Iterator<Item = Result<OutputAssignment<U>, ContractError>> + 'c
     where
         A: Clone + KnownState + 'c,
         U: From<A> + KnownState + 'c,
     {
-        Ok(state
+        state
             .into_iter()
-            .map(|r| r.expect("state read failure"))
-            .filter(move |outp| outp.opout.ty == type_id)
-            .map(OutputAssignment::<A>::transmute))
+            .map(read_err)
+            .filter(move |res| match res {
+                Ok(outp) => outp.opout.ty == type_id,
+                // read failures are never filtered out
+                Err(_) => true,
+            })
+            .map(|res| res.map(OutputAssignment::<A>::transmute))
     }
 
     pub fn rights<'c>(
         &'c self,
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = RightsAllocation> + 'c, ContractError> {
+    ) -> impl Iterator<Item = Result<RightsAllocation, ContractError>> + 'c {
         let type_id = self.schema().assignment_type(name);
         self.rights_raw(type_id, filter)
     }
@@ -316,15 +334,15 @@ impl<S: ContractStateRead> ContractData<S> {
         &'c self,
         type_id: AssignmentType,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = RightsAllocation> + 'c, ContractError> {
-        self.extract_state(self.state.rights_all(), type_id, filter)
+    ) -> impl Iterator<Item = Result<RightsAllocation, ContractError>> + 'c {
+        self.extract_state(self.state.rights_all(Some(type_id)), type_id, filter)
     }
 
     pub fn fungible<'c>(
         &'c self,
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = FungibleAllocation> + 'c, ContractError> {
+    ) -> impl Iterator<Item = Result<FungibleAllocation, ContractError>> + 'c {
         let type_id = self.schema().assignment_type(name);
         self.fungible_raw(type_id, filter)
     }
@@ -333,15 +351,15 @@ impl<S: ContractStateRead> ContractData<S> {
         &'c self,
         type_id: AssignmentType,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = FungibleAllocation> + 'c, ContractError> {
-        self.extract_state(self.state.fungible_all(), type_id, filter)
+    ) -> impl Iterator<Item = Result<FungibleAllocation, ContractError>> + 'c {
+        self.extract_state(self.state.fungible_all(Some(type_id)), type_id, filter)
     }
 
     pub fn data<'c>(
         &'c self,
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = DataAllocation> + 'c, ContractError> {
+    ) -> impl Iterator<Item = Result<DataAllocation, ContractError>> + 'c {
         let type_id = self.schema().assignment_type(name);
         self.data_raw(type_id, filter)
     }
@@ -350,38 +368,42 @@ impl<S: ContractStateRead> ContractData<S> {
         &'c self,
         type_id: AssignmentType,
         filter: impl AssignmentsFilter + 'c,
-    ) -> Result<impl Iterator<Item = DataAllocation> + 'c, ContractError> {
-        self.extract_state(self.state.data_all(), type_id, filter)
+    ) -> impl Iterator<Item = Result<DataAllocation, ContractError>> + 'c {
+        self.extract_state(self.state.data_all(Some(type_id)), type_id, filter)
     }
 
     pub fn allocations<'c>(
         &'c self,
         filter: impl AssignmentsFilter + Copy + 'c,
-    ) -> impl Iterator<Item = OwnedAllocation> + 'c {
-        fn f<'a, S, U, E: Error>(
+    ) -> impl Iterator<Item = Result<OwnedAllocation, ContractError>> + 'c {
+        fn f<'a, S, U, E: Error + 'a>(
             filter: impl AssignmentsFilter + 'a,
             state: impl IntoIterator<Item = Result<OutputAssignment<S>, E>> + 'a,
-        ) -> impl Iterator<Item = OutputAssignment<U>> + 'a
+        ) -> impl Iterator<Item = Result<OutputAssignment<U>, ContractError>> + 'a
         where
             S: Clone + KnownState + 'a,
             U: From<S> + KnownState + 'a,
         {
             state
                 .into_iter()
-                .map(|r| r.expect("state read failure"))
-                .filter(move |outp| filter.should_include(outp.seal, outp.witness))
-                .map(OutputAssignment::<S>::transmute)
+                .map(read_err)
+                .filter(move |res| match res {
+                    Ok(outp) => filter.should_include(outp.seal, outp.witness),
+                    // read failures are never filtered out
+                    Err(_) => true,
+                })
+                .map(|res| res.map(OutputAssignment::<S>::transmute))
         }
 
-        f(filter, self.state.rights_all())
-            .chain(f(filter, self.state.fungible_all()))
-            .chain(f(filter, self.state.data_all()))
+        f(filter, self.state.rights_all(None))
+            .chain(f(filter, self.state.fungible_all(None)))
+            .chain(f(filter, self.state.data_all(None)))
     }
 
     pub fn outpoint_allocations(
         &self,
         outpoint: Outpoint,
-    ) -> impl Iterator<Item = OwnedAllocation> + '_ {
+    ) -> impl Iterator<Item = Result<OwnedAllocation, ContractError>> + '_ {
         self.allocations(outpoint)
     }
 
@@ -389,12 +411,13 @@ impl<S: ContractStateRead> ContractData<S> {
         &self,
         filter_outpoints: impl AssignmentsFilter + Clone,
         filter_witnesses: impl AssignmentsFilter + Clone,
-    ) -> Vec<ContractOp> {
-        self.history_fungible(filter_outpoints.clone(), filter_witnesses.clone())
+    ) -> Result<Vec<ContractOp>, ContractError> {
+        Ok(self
+            .history_fungible(filter_outpoints.clone(), filter_witnesses.clone())?
             .into_iter()
-            .chain(self.history_rights(filter_outpoints.clone(), filter_witnesses.clone()))
-            .chain(self.history_data(filter_outpoints.clone(), filter_witnesses.clone()))
-            .collect()
+            .chain(self.history_rights(filter_outpoints.clone(), filter_witnesses.clone())?)
+            .chain(self.history_data(filter_outpoints.clone(), filter_witnesses.clone())?)
+            .collect())
     }
 
     fn operations<
@@ -407,33 +430,36 @@ impl<S: ContractStateRead> ContractData<S> {
         state: impl Fn(&'c S) -> I,
         filter_outpoints: impl AssignmentsFilter,
         filter_witnesses: impl AssignmentsFilter,
-    ) -> Vec<ContractOp>
+    ) -> Result<Vec<ContractOp>, ContractError>
     where
         AllocatedState: From<T>,
     {
-        // get all allocations which ever belonged to this wallet and store them by witness id
-        let mut allocations_our_outpoint = state(&self.state)
-            .map(|r| r.expect("state read failure"))
-            .filter(move |outp| filter_outpoints.should_include(outp.seal, outp.witness))
-            .fold(HashMap::<_, HashSet<_>>::new(), |mut map, a| {
-                map.entry(a.witness)
+        // both maps are filled from one read of the state
+        let mut allocations_our_outpoint = HashMap::<_, HashSet<_>>::new();
+        let mut allocations_our_witness = HashMap::<_, HashSet<_>>::new();
+        let allocations = state(&self.state)
+            .map(read_err)
+            .collect::<Result<Vec<_>, _>>()?;
+        for allocation in allocations {
+            let allocation = allocation.transmute::<AllocatedState>();
+            // allocations which ever belonged to this wallet, kept by witness id
+            if filter_outpoints.should_include(allocation.seal, allocation.witness) {
+                allocations_our_outpoint
+                    .entry(allocation.witness)
                     .or_default()
-                    .insert(a.transmute::<AllocatedState>());
-                map
-            });
-        // get all allocations which has a witness transaction belonging to this wallet
-        let mut allocations_our_witness = state(&self.state)
-            .map(|r| r.expect("state read failure"))
-            .filter(move |outp| filter_witnesses.should_include(outp.seal, outp.witness))
-            .fold(HashMap::<_, HashSet<_>>::new(), |mut map, a| {
-                let witness = a.witness.expect(
+                    .insert(allocation.clone());
+            }
+            // allocations whose witness transaction belongs to this wallet
+            if filter_witnesses.should_include(allocation.seal, allocation.witness) {
+                let witness = allocation.witness.expect(
                     "all empty witnesses must be already filtered out by wallet.filter_witness()",
                 );
-                map.entry(witness)
+                allocations_our_witness
+                    .entry(witness)
                     .or_default()
-                    .insert(a.transmute::<AllocatedState>());
-                map
-            });
+                    .insert(allocation);
+            }
+        }
 
         // gather all witnesses from both sets
         let mut witness_ids = allocations_our_witness
@@ -455,9 +481,12 @@ impl<S: ContractStateRead> ContractData<S> {
         for witness_id in witness_ids {
             let our_outpoint = allocations_our_outpoint.remove(&Some(witness_id));
             let our_witness = allocations_our_witness.remove(&witness_id);
-            let witness_info = self.witness_info(witness_id).expect(
-                "witness id was returned from the contract state above, so it must be there",
-            );
+            let witness_info = self
+                .witness_info(witness_id)
+                .map_err(|e| ContractError::StateRead(e.to_string()))?
+                .expect(
+                    "witness id was returned from the contract state above, so it must be there",
+                );
             match (our_outpoint, our_witness) {
                 // we own both allocation and witness transaction: these allocations are changes and
                 // outgoing payments. The difference between the change and the payments are whether
@@ -500,38 +529,42 @@ impl<S: ContractStateRead> ContractData<S> {
             };
         }
 
-        ops
+        Ok(ops)
     }
 
     pub fn history_fungible(
         &self,
         filter_outpoints: impl AssignmentsFilter,
         filter_witnesses: impl AssignmentsFilter,
-    ) -> Vec<ContractOp> {
-        self.operations(|state| state.fungible_all(), filter_outpoints, filter_witnesses)
+    ) -> Result<Vec<ContractOp>, ContractError> {
+        self.operations(|state| state.fungible_all(None), filter_outpoints, filter_witnesses)
     }
 
     pub fn history_rights(
         &self,
         filter_outpoints: impl AssignmentsFilter,
         filter_witnesses: impl AssignmentsFilter,
-    ) -> Vec<ContractOp> {
-        self.operations(|state| state.rights_all(), filter_outpoints, filter_witnesses)
+    ) -> Result<Vec<ContractOp>, ContractError> {
+        self.operations(|state| state.rights_all(None), filter_outpoints, filter_witnesses)
     }
 
     pub fn history_data(
         &self,
         filter_outpoints: impl AssignmentsFilter,
         filter_witnesses: impl AssignmentsFilter,
-    ) -> Vec<ContractOp> {
-        self.operations(|state| state.data_all(), filter_outpoints, filter_witnesses)
+    ) -> Result<Vec<ContractOp>, ContractError> {
+        self.operations(|state| state.data_all(None), filter_outpoints, filter_witnesses)
     }
 
-    pub fn witness_info(&self, witness_id: Txid) -> Option<WitnessInfo> {
-        let ord = self.state.witness_ord(witness_id)?;
-        Some(WitnessInfo {
+    /// Ordering information for a witness, `None` when the state does not know
+    /// it.
+    pub fn witness_info(
+        &self,
+        witness_id: Txid,
+    ) -> Result<Option<WitnessInfo>, <S as ContractStateRead>::Error> {
+        Ok(self.state.witness_ord(witness_id)?.map(|ord| WitnessInfo {
             id: witness_id,
             ord,
-        })
+        }))
     }
 }

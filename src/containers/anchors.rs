@@ -67,7 +67,7 @@ pub enum SealWitnessMergeError {
 )]
 pub struct SealWitness {
     pub tx: Tx,
-    pub merkle_block: mpc::MerkleBlock,
+    pub mpc_merkle_block: mpc::MerkleBlock,
     pub dbc_proof: DbcProof,
     pub spv_proof: Option<SpvProof>,
 }
@@ -75,13 +75,13 @@ pub struct SealWitness {
 impl SealWitness {
     pub fn new(
         tx: Tx,
-        merkle_block: mpc::MerkleBlock,
+        mpc_merkle_block: mpc::MerkleBlock,
         dbc_proof: DbcProof,
         spv_proof: Option<SpvProof>,
     ) -> Self {
         SealWitness {
             tx,
-            merkle_block,
+            mpc_merkle_block,
             dbc_proof,
             spv_proof,
         }
@@ -95,7 +95,8 @@ impl SealWitness {
             return Err(SealWitnessMergeError::DbcMismatch);
         }
         self.tx.merge_reveal(&other.tx)?;
-        self.merkle_block.merge_reveal(&other.merkle_block)?;
+        self.mpc_merkle_block
+            .merge_reveal(&other.mpc_merkle_block)?;
         match (&self.spv_proof, &other.spv_proof) {
             (Some(spv1), Some(spv2)) if spv1 != spv2 => {
                 return Err(SealWitnessMergeError::SpvMismatch);
@@ -107,7 +108,7 @@ impl SealWitness {
     }
 
     pub fn known_bundle_ids(&self) -> impl Iterator<Item = BundleId> {
-        let map = self.merkle_block.to_known_message_map().release();
+        let map = self.mpc_merkle_block.to_known_message_map().release();
         map.into_values()
             .map(|msg| BundleId::from_byte_array(msg.to_byte_array()))
     }

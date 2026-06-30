@@ -41,7 +41,7 @@ use strict_types::{decode, SemId, TypeSystem};
 use crate::containers::{BuilderSeal, ConsignmentVer, Contract, ValidConsignment};
 use crate::contract::resolver::DumbResolver;
 use crate::contract::AllocatedState;
-use crate::persistence::StashInconsistency;
+use crate::persistence::Inconsistency;
 
 #[derive(Clone, Eq, PartialEq, Debug, Display, Error, From)]
 #[display(doc_comments)]
@@ -73,7 +73,7 @@ pub enum BuilderError {
 
     #[from]
     #[display(doc_comments)]
-    Inconsistency(StashInconsistency),
+    Inconsistency(Inconsistency),
 
     #[from]
     #[display(inner)]

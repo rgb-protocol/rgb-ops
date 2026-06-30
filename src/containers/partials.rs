@@ -69,7 +69,7 @@ impl Batch {
     }
 }
 
-/// Structure exported from a PSBT for merging into the stash. It contains a set
+/// Structure exported from a PSBT for merging into the store. It contains a set
 /// of finalized state transitions (under multiple contracts), packed into
 /// bundles, and anchored to a single layer 1 transaction.
 #[derive(Clone, PartialEq, Eq, Debug, Getters)]
