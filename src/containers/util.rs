@@ -19,15 +19,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::btree_set;
-use std::iter;
+use std::{iter, slice};
 
-use amplify::confinement::{NonEmptyOrdSet, U16};
-use rgb::SecretSeal;
+use amplify::confinement::{NonEmptyVec, U16};
+use rgb::GraphSeal;
 use strict_encoding::DefaultBasedStrictDumb;
 
+use crate::containers::BuilderSeal;
 use crate::LIB_NAME_RGB_OPS;
 
+/// Version of the [`Consignment`](crate::containers::Consignment) container.
+///
+/// Single-valued on purpose: a consignment is V1 by construction, so the
+/// version is carried by the type rather than by data. The leading version
+/// byte still appears on the wire (the strict codec encodes the discriminant),
+/// and decoding a byte other than `1` fails through `try_from_u8`, which is
+/// what rejects legacy V0 streams. Those are read with
+/// [`ConsignmentV0`](crate::containers::legacy::ConsignmentV0) instead.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display, Default)]
 #[derive(StrictType, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_OPS, tags = repr, into_u8, try_from_u8)]
@@ -38,33 +46,37 @@ use crate::LIB_NAME_RGB_OPS;
 )]
 #[non_exhaustive]
 #[repr(u8)]
-pub enum ContainerVer {
+pub enum ConsignmentVer {
     #[default]
-    #[display("v0", alt = "0")]
-    V0 = 0,
+    #[display("v1", alt = "1")]
+    V1 = 1,
 }
 
-impl DefaultBasedStrictDumb for ContainerVer {}
+impl DefaultBasedStrictDumb for ConsignmentVer {}
 
-/// Non-empty set of secret seals.
+/// Non-empty list of history terminal seals.
+///
+/// Each seal is a [`BuilderSeal`]: either concealed (only the secret hash is
+/// known, for blinded transfers) or revealed (the full graph seal is known,
+/// for witness-vout transfers).
 #[derive(Wrapper, WrapperMut, Clone, PartialEq, Eq, Hash, Debug, From)]
 #[wrapper(Deref)]
 #[wrapper_mut(DerefMut)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS, dumb = Self(NonEmptyOrdSet::with(SecretSeal::strict_dumb())))]
+#[strict_type(lib = LIB_NAME_RGB_OPS, dumb = Self(NonEmptyVec::with(BuilderSeal::strict_dumb())))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
-pub struct SecretSeals(
+pub struct TerminalSeals(
     #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    NonEmptyOrdSet<SecretSeal, U16>,
+    NonEmptyVec<BuilderSeal<GraphSeal>, U16>,
 );
 
-impl<'a> IntoIterator for &'a SecretSeals {
-    type Item = SecretSeal;
-    type IntoIter = iter::Copied<btree_set::Iter<'a, SecretSeal>>;
+impl<'a> IntoIterator for &'a TerminalSeals {
+    type Item = BuilderSeal<GraphSeal>;
+    type IntoIter = iter::Copied<slice::Iter<'a, BuilderSeal<GraphSeal>>>;
 
     fn into_iter(self) -> Self::IntoIter { self.0.iter().copied() }
 }

@@ -24,16 +24,17 @@ use std::io::{self, Read, Write};
 
 use amplify::confinement::U32 as FILE_MAX_LEN;
 use armor::{AsciiArmor, StrictArmor};
+use rgb::validation::SchemaDefinition;
 #[cfg(all(feature = "fs", feature = "serde"))]
 use strict_encoding::StrictReader;
 use strict_encoding::{StreamReader, StreamWriter, StrictDecode, StrictEncode};
 
 #[cfg(all(feature = "fs", feature = "serde"))]
 use crate::containers::{Consignment, ValidConsignment};
-use crate::containers::{Contract, Kit, Transfer};
+use crate::containers::{Contract, Transfer};
 
 const RGB_PREFIX: [u8; 4] = *b"RGB\x00";
-const MAGIC_LEN: usize = 3;
+pub(crate) const MAGIC_LEN: usize = 3;
 
 #[derive(Debug, Display, Error, From)]
 #[display(doc_comments)]
@@ -110,8 +111,11 @@ pub trait FileContent: StrictArmor {
     }
 }
 
-impl FileContent for Kit {
-    const MAGIC: [u8; MAGIC_LEN] = *b"KIT";
+impl FileContent for SchemaDefinition {
+    // Bumped from `SDF` when the definition started carrying strict type
+    // libraries instead of nothing: a reader of the old layout must fail with
+    // `InvalidMagic` rather than silently misparse the stream.
+    const MAGIC: [u8; MAGIC_LEN] = *b"SD2";
 }
 
 impl FileContent for Contract {
@@ -170,7 +174,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
 )]
 pub enum UniversalFile {
     #[from]
-    Kit(Kit),
+    SchemaDefinition(SchemaDefinition),
 
     #[from]
     Contract(Contract),
@@ -190,7 +194,7 @@ impl UniversalFile {
         }
         let mut reader = StreamReader::new::<FILE_MAX_LEN>(data);
         Ok(match magic {
-            x if x == Kit::MAGIC => Kit::strict_read(&mut reader)?.into(),
+            x if x == SchemaDefinition::MAGIC => SchemaDefinition::strict_read(&mut reader)?.into(),
             x if x == Contract::MAGIC => Contract::strict_read(&mut reader)?.into(),
             x if x == Transfer::MAGIC => Transfer::strict_read(&mut reader)?.into(),
             _ => return Err(LoadError::InvalidMagic),
@@ -200,7 +204,7 @@ impl UniversalFile {
     pub fn save(&self, mut writer: impl Write) -> Result<(), io::Error> {
         writer.write_all(&RGB_PREFIX)?;
         let magic = match self {
-            UniversalFile::Kit(_) => Kit::MAGIC,
+            UniversalFile::SchemaDefinition(_) => SchemaDefinition::MAGIC,
             UniversalFile::Contract(_) => Contract::MAGIC,
             UniversalFile::Transfer(_) => Transfer::MAGIC,
         };
@@ -209,7 +213,7 @@ impl UniversalFile {
         let writer = StreamWriter::new::<FILE_MAX_LEN>(writer);
 
         match self {
-            UniversalFile::Kit(content) => content.strict_write(writer),
+            UniversalFile::SchemaDefinition(content) => content.strict_write(writer),
             UniversalFile::Contract(content) => content.strict_write(writer),
             UniversalFile::Transfer(content) => content.strict_write(writer),
         }
@@ -231,7 +235,9 @@ impl UniversalFile {
 impl Display for UniversalFile {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            UniversalFile::Kit(content) => Display::fmt(&content.display_ascii_armored(), f),
+            UniversalFile::SchemaDefinition(content) => {
+                Display::fmt(&content.display_ascii_armored(), f)
+            }
             UniversalFile::Contract(content) => Display::fmt(&content.display_ascii_armored(), f),
             UniversalFile::Transfer(content) => Display::fmt(&content.display_ascii_armored(), f),
         }
@@ -240,253 +246,205 @@ impl Display for UniversalFile {
 
 #[cfg(test)]
 mod test {
-    use std::fs::OpenOptions;
-    use std::str::FromStr;
+    use std::fs::File;
+    use std::path::{Path, PathBuf};
+    use std::{env, fs, process};
 
+    #[cfg(all(feature = "fs", feature = "serde"))]
     use rgb::validation;
+    use strict_encoding::StrictDumb;
 
     use super::*;
+    use crate::containers::test_fixtures::almost_default_contract;
+    #[cfg(feature = "fs")]
+    use crate::containers::test_fixtures::almost_default_transfer;
+    #[cfg(all(feature = "fs", feature = "serde"))]
     use crate::containers::ValidTransfer;
 
-    static DEFAULT_KIT_PATH: &str = "asset/kit.default";
+    // Committed golden files. Tests only ever *read* these: they pin the wire
+    // format, so a test that rewrote one would be overwriting its own oracle.
+    // Regenerate them with the `#[ignore]`d `regenerate_fixtures` /
+    // `generate_v1_golden` in `test_fixtures`, then commit the result.
+    static DEFAULT_SCHEMA_DEF_PATH: &str = "asset/schema_definition.default";
     #[cfg(feature = "fs")]
-    static ARMORED_KIT_PATH: &str = "asset/armored_kit.default";
+    static ARMORED_SCHEMA_DEF_PATH: &str = "asset/armored_schema_definition.default";
 
     static DEFAULT_CONTRACT_PATH: &str = "asset/contract.default";
     #[cfg(feature = "fs")]
     static ARMORED_CONTRACT_PATH: &str = "asset/armored_contract.default";
 
+    #[cfg(feature = "fs")]
     static DEFAULT_TRANSFER_PATH: &str = "asset/transfer.default";
     #[cfg(feature = "fs")]
     static ARMORED_TRANSFER_PATH: &str = "asset/armored_transfer.default";
 
+    #[cfg(all(feature = "fs", feature = "serde"))]
     static DEFAULT_VALID_TRANSFER_PATH: &str = "asset/valid_transfer.default";
 
+    /// A scratch path under the system temp directory, removed on drop.
+    ///
+    /// Round-trip tests save through one of these rather than through the
+    /// `asset/` goldens, so that saving is never aimed at a shared, committed
+    /// file: two tests touching one path race each other, and a test that
+    /// rewrites the fixture it also asserts against stops checking anything.
+    struct TmpPath(PathBuf);
+
+    impl TmpPath {
+        fn new(name: &str) -> Self {
+            // The pid separates concurrent `cargo test` processes; the
+            // per-test `name` separates tests within one process.
+            let path = env::temp_dir().join(format!("rgb-ops-test-{}-{name}", process::id()));
+            let _ = fs::remove_file(&path);
+            Self(path)
+        }
+    }
+
+    impl AsRef<Path> for TmpPath {
+        fn as_ref(&self) -> &Path { &self.0 }
+    }
+
+    impl Drop for TmpPath {
+        fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    }
+
+    /// Asserts that the committed golden at `path` still decodes to `expected`.
+    fn assert_golden<T: FileContent + PartialEq + Debug>(path: &str, expected: &T) {
+        let file = File::open(path).unwrap_or_else(|e| panic!("fail to open {path}: {e}"));
+        let loaded = T::load(file).unwrap_or_else(|e| panic!("fail to load {path}: {e}"));
+        assert_eq!(&loaded, expected, "{path} no longer decodes to the expected value");
+    }
+
+    /// Asserts that `value` survives a save/load round trip through a scratch
+    /// file named after the calling test.
+    fn assert_round_trip<T: FileContent + PartialEq + Debug>(name: &str, value: &T) {
+        let path = TmpPath::new(name);
+        let file = File::create(&path).unwrap_or_else(|e| panic!("fail to create {name}: {e}"));
+        value
+            .save(file)
+            .unwrap_or_else(|e| panic!("fail to save {name}: {e}"));
+
+        let file = File::open(&path).unwrap_or_else(|e| panic!("fail to reopen {name}: {e}"));
+        let loaded = T::load(file).unwrap_or_else(|e| panic!("fail to reload {name}: {e}"));
+        assert_eq!(&loaded, value, "{name} does not survive a save/load round trip");
+    }
+
+    /// [`assert_golden`] for the ASCII-armored representation.
+    #[cfg(feature = "fs")]
+    fn assert_armored_golden<T: FileContent + PartialEq + Debug>(path: &str, expected: &T) {
+        let loaded = T::load_armored(path).unwrap_or_else(|e| panic!("fail to load {path}: {e}"));
+        assert_eq!(&loaded, expected, "{path} no longer decodes to the expected value");
+    }
+
+    /// [`assert_round_trip`] for the ASCII-armored representation.
+    #[cfg(feature = "fs")]
+    fn assert_armored_round_trip<T: FileContent + PartialEq + Debug>(name: &str, value: &T) {
+        let path = TmpPath::new(name);
+        value
+            .save_armored(&path)
+            .unwrap_or_else(|e| panic!("fail to save armored {name}: {e}"));
+        let loaded =
+            T::load_armored(&path).unwrap_or_else(|e| panic!("fail to reload armored {name}: {e}"));
+        assert_eq!(&loaded, value, "{name} does not survive an armored round trip");
+    }
+
     #[test]
-    fn kit_save_load_round_trip() {
-        let mut kit_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_KIT_PATH)
-            .unwrap();
-        let kit = Kit::load(kit_file).expect("fail to load kit.default");
-        let default_kit = Kit::default();
-        assert_eq!(kit, default_kit, "kit default is not same as before");
+    fn schema_definition_golden() {
+        assert_golden(DEFAULT_SCHEMA_DEF_PATH, &SchemaDefinition::strict_dumb());
+    }
 
-        kit_file = OpenOptions::new()
-            .write(true)
-            .open(DEFAULT_KIT_PATH)
-            .unwrap();
-        default_kit.save(kit_file).expect("fail to export kit");
-
-        kit_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_KIT_PATH)
-            .unwrap();
-        let kit = Kit::load(kit_file).expect("fail to load kit.default");
-        assert_eq!(kit, default_kit, "kit roudtrip does not work");
+    #[test]
+    fn schema_definition_save_load_round_trip() {
+        assert_round_trip("schema_definition", &SchemaDefinition::strict_dumb());
     }
 
     #[cfg(feature = "fs")]
     #[test]
-    fn armored_kit_save_load_round_trip() {
-        let kit_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_KIT_PATH)
-            .unwrap();
-        let kit = Kit::load(kit_file).expect("fail to load kit.default");
-        let unarmored_kit =
-            Kit::load_armored(ARMORED_KIT_PATH).expect("fail to export armored kit");
-        assert_eq!(kit, unarmored_kit, "kit unarmored is not the same");
-
-        let default_kit = Kit::default();
-        default_kit
-            .save_armored(ARMORED_KIT_PATH)
-            .expect("fail to save armored kit");
-        let kit = Kit::load_armored(ARMORED_KIT_PATH).expect("fail to export armored kit");
-        assert_eq!(kit, default_kit, "armored kit roudtrip does not work");
+    fn armored_schema_definition_golden() {
+        assert_armored_golden(ARMORED_SCHEMA_DEF_PATH, &SchemaDefinition::strict_dumb());
     }
 
-    // A contract with almost default fields
-    fn almost_default_contract() -> Contract {
-        Contract {
-            version: Default::default(),
-            transfer: Default::default(),
-            terminals: Default::default(),
-            genesis: rgb::Genesis {
-                ffv: Default::default(),
-                schema_id: rgb::SchemaId::from_str(
-                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA#distant-history-exotic",
-                )
-                .unwrap(),
-                timestamp: Default::default(),
-                issuer: Default::default(),
-                chain_net: Default::default(),
-                seal_closing_strategy: Default::default(),
-                metadata: Default::default(),
-                globals: Default::default(),
-                assignments: Default::default(),
-            },
-            bundles: Default::default(),
-            schema: rgb::Schema {
-                ffv: Default::default(),
-                name: strict_encoding::TypeName::from_str("Name").unwrap(),
-                meta_types: Default::default(),
-                global_types: Default::default(),
-                owned_types: Default::default(),
-                genesis: Default::default(),
-                transitions: Default::default(),
-                default_assignment: Default::default(),
-            },
-            types: Default::default(),
-            scripts: Default::default(),
-        }
+    #[cfg(feature = "fs")]
+    #[test]
+    fn armored_schema_definition_save_load_round_trip() {
+        assert_armored_round_trip("armored_schema_definition", &SchemaDefinition::strict_dumb());
     }
 
     #[test]
+    fn contract_golden() { assert_golden(DEFAULT_CONTRACT_PATH, &almost_default_contract()); }
+
+    #[test]
     fn contract_save_load_round_trip() {
-        let mut contract_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_CONTRACT_PATH)
-            .unwrap();
-        let contract = Contract::load(contract_file).expect("fail to load contract.default");
+        assert_round_trip("contract", &almost_default_contract());
+    }
 
-        let default_contract = almost_default_contract();
-        assert_eq!(&contract, &default_contract, "contract default is not same as before");
-
-        contract_file = OpenOptions::new()
-            .write(true)
-            .open(DEFAULT_CONTRACT_PATH)
-            .unwrap();
-        default_contract
-            .save(contract_file)
-            .expect("fail to export contract");
-
-        contract_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_CONTRACT_PATH)
-            .unwrap();
-        let contract = Contract::load(contract_file).expect("fail to load contract.default");
-        assert_eq!(&contract, &default_contract, "contract roudtrip does not work");
+    #[cfg(feature = "fs")]
+    #[test]
+    fn armored_contract_golden() {
+        assert_armored_golden(ARMORED_CONTRACT_PATH, &almost_default_contract());
     }
 
     #[cfg(feature = "fs")]
     #[test]
     fn armored_contract_save_load_round_trip() {
-        let contract_file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_CONTRACT_PATH)
-            .unwrap();
-        let contract = Contract::load(contract_file).expect("fail to load contract.default");
-        let unarmored_contract =
-            Contract::load_armored(ARMORED_CONTRACT_PATH).expect("fail to export armored contract");
-        assert_eq!(contract, unarmored_contract, "contract unarmored is not the same");
-
-        let default_contract = almost_default_contract();
-        default_contract
-            .save_armored(ARMORED_CONTRACT_PATH)
-            .expect("fail to save armored contract");
-        let contract =
-            Contract::load_armored(ARMORED_CONTRACT_PATH).expect("fail to export armored contract");
-        assert_eq!(contract, default_contract, "armored contract roudtrip does not work");
+        assert_armored_round_trip("armored_contract", &almost_default_contract());
     }
 
-    // A transfer with almost default fields
-    fn almost_default_transfer() -> Transfer {
-        Transfer {
-            version: Default::default(),
-            transfer: true,
-            terminals: Default::default(),
-            genesis: rgb::Genesis {
-                ffv: Default::default(),
-                schema_id: rgb::SchemaId::from_str(
-                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA#distant-history-exotic",
-                )
-                .unwrap(),
-                timestamp: Default::default(),
-                issuer: Default::default(),
-                chain_net: Default::default(),
-                seal_closing_strategy: Default::default(),
-                metadata: Default::default(),
-                globals: Default::default(),
-                assignments: Default::default(),
-            },
-            bundles: Default::default(),
-            schema: rgb::Schema {
-                ffv: Default::default(),
-                name: strict_encoding::TypeName::from_str("Name").unwrap(),
-                meta_types: Default::default(),
-                global_types: Default::default(),
-                owned_types: Default::default(),
-                genesis: Default::default(),
-                transitions: Default::default(),
-                default_assignment: Default::default(),
-            },
-            types: Default::default(),
-            scripts: Default::default(),
-        }
-    }
+    #[cfg(feature = "fs")]
+    #[test]
+    fn transfer_golden() { assert_golden(DEFAULT_TRANSFER_PATH, &almost_default_transfer()); }
 
     #[cfg(feature = "fs")]
     #[test]
     fn transfer_save_load_round_trip() {
-        let transfer =
-            Transfer::load_file(DEFAULT_TRANSFER_PATH).expect("fail to load transfer.default");
-
-        let default_transfer = almost_default_transfer();
-        assert_eq!(&transfer, &default_transfer, "transfer default is not same as before");
-
-        default_transfer
-            .save_file(DEFAULT_TRANSFER_PATH)
-            .expect("fail to export transfer");
-
-        let transfer =
-            Transfer::load_file(DEFAULT_TRANSFER_PATH).expect("fail to load transfer.default");
-        assert_eq!(&transfer, &default_transfer, "transfer roudtrip does not work");
+        assert_round_trip("transfer", &almost_default_transfer());
     }
 
     #[cfg(feature = "fs")]
     #[test]
-    fn valid_transfer_save_load_round_trip() {
-        let valid_transfer = ValidTransfer::load_file(DEFAULT_VALID_TRANSFER_PATH)
-            .expect("fail to load valid transfer.default");
-
-        let default_transfer = almost_default_transfer();
-        let default_valid_transfer =
-            ValidTransfer::from_parts(default_transfer, validation::Status::default());
-        assert_eq!(
-            valid_transfer.into_consignment(),
-            default_valid_transfer.clone().into_consignment(),
-            "valid transfer default is not same as before"
-        );
-
-        default_valid_transfer
-            .save_file(DEFAULT_VALID_TRANSFER_PATH)
-            .expect("fail to export transfer");
-
-        let valid_transfer = ValidTransfer::load_file(DEFAULT_VALID_TRANSFER_PATH)
-            .expect("fail to load valid transfer.default");
-        assert_eq!(
-            valid_transfer.into_consignment(),
-            default_valid_transfer.into_consignment(),
-            "valid transfer roudtrip does not work"
-        );
+    fn armored_transfer_golden() {
+        assert_armored_golden(ARMORED_TRANSFER_PATH, &almost_default_transfer());
     }
 
     #[cfg(feature = "fs")]
     #[test]
     fn armored_transfer_save_load_round_trip() {
-        let transfer =
-            Transfer::load_file(DEFAULT_TRANSFER_PATH).expect("fail to load transfer.default");
-        let unarmored_transfer =
-            Transfer::load_armored(ARMORED_TRANSFER_PATH).expect("fail to export armored transfer");
-        assert_eq!(transfer, unarmored_transfer, "transfer unarmored is not the same");
+        assert_armored_round_trip("armored_transfer", &almost_default_transfer());
+    }
 
-        let default_transfer = almost_default_transfer();
-        default_transfer
-            .save_armored(ARMORED_TRANSFER_PATH)
-            .expect("fail to save armored transfer");
-        let transfer =
-            Transfer::load_armored(ARMORED_TRANSFER_PATH).expect("fail to export armored transfer");
-        assert_eq!(transfer, default_transfer, "armored transfer roudtrip does not work");
+    /// `ValidTransfer` gets its own pair rather than going through the helpers
+    /// above: it carries a JSON validation status alongside the consignment,
+    /// so it has its own `save_file`/`load_file` and no `PartialEq`.
+    #[cfg(all(feature = "fs", feature = "serde"))]
+    fn default_valid_transfer() -> ValidTransfer {
+        ValidTransfer::from_parts(almost_default_transfer(), validation::Status::default())
+    }
+
+    #[cfg(all(feature = "fs", feature = "serde"))]
+    #[test]
+    fn valid_transfer_golden() {
+        let loaded = ValidTransfer::load_file(DEFAULT_VALID_TRANSFER_PATH)
+            .expect("fail to load valid_transfer.default");
+        assert_eq!(
+            loaded.into_consignment(),
+            default_valid_transfer().into_consignment(),
+            "{DEFAULT_VALID_TRANSFER_PATH} no longer decodes to the expected value"
+        );
+    }
+
+    #[cfg(all(feature = "fs", feature = "serde"))]
+    #[test]
+    fn valid_transfer_save_load_round_trip() {
+        let path = TmpPath::new("valid_transfer");
+        let valid_transfer = default_valid_transfer();
+        valid_transfer
+            .save_file(&path)
+            .expect("fail to save valid transfer");
+
+        let loaded = ValidTransfer::load_file(&path).expect("fail to reload valid transfer");
+        assert_eq!(
+            loaded.into_consignment(),
+            valid_transfer.into_consignment(),
+            "valid transfer does not survive a save/load round trip"
+        );
     }
 }

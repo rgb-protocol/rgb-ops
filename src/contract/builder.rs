@@ -28,7 +28,7 @@ use amplify::{confinement, Wrapper};
 use chrono::Utc;
 use invoice::Amount;
 use rgb::assignments::AssignVec;
-use rgb::validation::{Scripts, ValidationConfig, ValidationError};
+use rgb::validation::{SchemaRules, ValidationConfig, ValidationError};
 use rgb::{
     Assign, AssignmentType, Assignments, ChainNet, ContractId, ExposedSeal, FungibleType, Genesis,
     GenesisSeal, GlobalState, GraphSeal, Identity, Layer1, MetadataError, Opout, OwnedStateSchema,
@@ -38,7 +38,7 @@ use rgbcore::{GlobalStateSchema, GlobalStateType, MetaType, Metadata};
 use strict_encoding::{FieldName, SerializeError, StrictSerialize};
 use strict_types::{decode, SemId, TypeSystem};
 
-use crate::containers::{BuilderSeal, ContainerVer, Contract, ValidConsignment};
+use crate::containers::{BuilderSeal, ConsignmentVer, Contract, ValidConsignment};
 use crate::contract::resolver::DumbResolver;
 use crate::contract::AllocatedState;
 use crate::persistence::StashInconsistency;
@@ -83,22 +83,17 @@ pub enum BuilderError {
 #[derive(Clone, Debug)]
 pub struct ContractBuilder {
     builder: OperationBuilder<GenesisSeal>,
-    scripts: Scripts,
+    rules: SchemaRules,
     issuer: Identity,
     chain_net: ChainNet,
 }
 
 impl ContractBuilder {
-    pub fn with(
-        issuer: Identity,
-        schema: Schema,
-        types: TypeSystem,
-        scripts: Scripts,
-        chain_net: ChainNet,
-    ) -> Self {
+    pub fn with(issuer: Identity, rules: SchemaRules, chain_net: ChainNet) -> Self {
+        let builder = OperationBuilder::with(rules.schema().clone(), rules.types().clone());
         Self {
-            builder: OperationBuilder::with(schema, types),
-            scripts,
+            builder,
+            rules,
             issuer,
             chain_net,
         }
@@ -226,7 +221,7 @@ impl ContractBuilder {
         self,
         timestamp: i64,
     ) -> Result<ValidConsignment<false>, BuilderError> {
-        let (schema, global, assignments, types, metadata) = self.builder.complete();
+        let (schema, global, assignments, _types, metadata) = self.builder.complete();
 
         let genesis = Genesis {
             ffv: none!(),
@@ -240,26 +235,19 @@ impl ContractBuilder {
             issuer: self.issuer,
         };
 
-        let scripts = Confined::from_iter_checked(self.scripts.into_values());
-
         let contract = Contract {
-            version: ContainerVer::V0,
+            version: ConsignmentVer::V1,
             transfer: false,
             terminals: none!(),
             genesis,
             bundles: none!(),
-            schema,
-
-            types: types.clone(),
-            scripts,
         };
 
         let validation_config = ValidationConfig {
             chain_net: self.chain_net,
-            trusted_typesystem: types,
             ..Default::default()
         };
-        let valid_contract = contract.validate(&DumbResolver, &validation_config)?;
+        let valid_contract = contract.validate(&self.rules, &DumbResolver, &validation_config)?;
 
         Ok(valid_contract)
     }
@@ -691,34 +679,24 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
         let owned_state = self.fungible.into_iter().map(|(id, vec)| {
             let vec = vec
                 .into_iter()
-                .map(|(seal, value)| match seal {
-                    BuilderSeal::Revealed(seal) => Assign::Revealed { seal, state: value },
-                    BuilderSeal::Concealed(seal) => Assign::ConfidentialSeal { seal, state: value },
-                })
+                .map(|(seal, value)| Assign { seal, state: value })
                 .collect::<Vec<_>>();
             let state = Confined::try_from_iter(vec).expect("at least one element");
             let state = TypedAssigns::Fungible(AssignVec::with(state));
             (id, state)
         });
         let owned_data = self.data.into_iter().map(|(id, vec)| {
-            let vec_data = vec.into_iter().map(|(seal, value)| match seal {
-                BuilderSeal::Revealed(seal) => Assign::Revealed { seal, state: value },
-                BuilderSeal::Concealed(seal) => Assign::ConfidentialSeal { seal, state: value },
-            });
+            let vec_data = vec
+                .into_iter()
+                .map(|(seal, value)| Assign { seal, state: value });
             let state_data = Confined::try_from_iter(vec_data).expect("at least one element");
             let state_data = TypedAssigns::Structured(AssignVec::with(state_data));
             (id, state_data)
         });
         let owned_rights = self.rights.into_iter().map(|(id, vec)| {
-            let vec_data = vec.into_iter().map(|seal| match seal {
-                BuilderSeal::Revealed(seal) => Assign::Revealed {
-                    seal,
-                    state: none!(),
-                },
-                BuilderSeal::Concealed(seal) => Assign::ConfidentialSeal {
-                    seal,
-                    state: none!(),
-                },
+            let vec_data = vec.into_iter().map(|seal| Assign {
+                seal,
+                state: none!(),
             });
             let state_data = Confined::try_from_iter(vec_data).expect("at least one element");
             let state_data = TypedAssigns::Declarative(AssignVec::with(state_data));

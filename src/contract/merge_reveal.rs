@@ -85,7 +85,7 @@ impl<State: ExposedState, Seal: ExposedSeal> MergeReveal for Assign<State, Seal>
     fn merge_reveal(&mut self, other: &Self) -> Result<(), MergeRevealError> {
         debug_assert_eq!(self.conceal(), other.conceal());
         // Anything + Revealed = Revealed
-        if let Assign::Revealed { .. } = other {
+        if other.seal.is_revealed() {
             *self = other.clone();
         }
         Ok(())

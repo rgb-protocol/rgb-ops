@@ -28,4 +28,37 @@ pub mod electrum_blocking;
 #[cfg(feature = "mempool_blocking")]
 pub mod mempool_blocking;
 
+#[cfg(feature = "bitcoind_blocking")]
+pub mod bitcoind_blocking;
+
 pub use any::AnyResolver;
+use rgb::bitcoin::Txid;
+use rgb::validation::{ResolveWitness, SpvProof, WitnessResolverError};
+
+/// Trait to retrieve the SPV inclusion proof of a mined TX.
+///
+/// This is the counterpart of the verification performed during validation via
+/// [`ResolveWitness::get_block_header`]: it lets a wallet obtain, from its own indexer,
+/// the proofs it then hands to its counterparties inside a consignment.
+pub trait ResolveSpvProof {
+    /// Return the [`SpvProof`] for the TX with the given `txid`.
+    ///
+    /// Fails if the TX is unknown to the indexer or is not mined yet.
+    ///
+    /// Returns `Err(NotSupported)` by default, so that an indexer whose backend cannot
+    /// produce inclusion proofs opts out with an empty `impl` instead of a stub. Such an
+    /// indexer stays fully usable: it simply never attaches proofs to the consignments it
+    /// produces, and the ones it receives are verified by retrieving the witness TX.
+    fn resolve_spv_proof(&self, _txid: Txid) -> Result<SpvProof, WitnessResolverError> {
+        Err(WitnessResolverError::NotSupported)
+    }
+}
+
+/// An indexer which [`AnyResolver`] can wrap.
+///
+/// Blanket-implemented; it exists only so that [`AnyResolver`] can hold a single boxed
+/// value offering both capabilities. Producing SPV proofs is optional, see
+/// [`ResolveSpvProof::resolve_spv_proof`].
+pub trait Indexer: ResolveWitness + ResolveSpvProof {}
+
+impl<T: ResolveWitness + ResolveSpvProof> Indexer for T {}

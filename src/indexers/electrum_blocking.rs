@@ -24,18 +24,109 @@
 use std::iter;
 use std::num::NonZeroU32;
 
+use amplify::confinement::Confined;
 use amplify::hex::FromHex;
 pub use electrum_client;
-use electrum_client::{Client, ElectrumApi, Param};
+use electrum_client::{Client, ElectrumApi, GetMerkleRes, Param};
+use rgb::bitcoin::block::Header;
 use rgb::bitcoin::constants::ChainHash;
-use rgb::bitcoin::{consensus, Transaction as Tx, Txid};
-use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
+use rgb::bitcoin::hashes::Hash as _;
+use rgb::bitcoin::{consensus, Transaction as Tx, TxMerkleNode, Txid};
+use rgbcore::validation::{ResolveWitness, SpvProof, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
 use rgbcore::ChainNet;
+
+use crate::indexers::ResolveSpvProof;
 
 /// Wrapper of an electrum client, necessary to implement the foreign `ResolveWitness` trait.
 pub struct ElectrumClient {
     pub inner: Client,
+}
+
+impl ElectrumClient {
+    fn resolve_witness_with_merkle(
+        &self,
+        txid: Txid,
+    ) -> Result<(WitnessStatus, Option<GetMerkleRes>), WitnessResolverError> {
+        // We get the height of the tip of blockchain
+        let header = self
+            .inner
+            .block_headers_subscribe()
+            .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?;
+
+        // Now we get and parse transaction information to get the number of
+        // confirmations
+        let tx_details = match self.inner.raw_call("blockchain.transaction.get", vec![
+            Param::String(txid.to_string()),
+            Param::Bool(true),
+        ]) {
+            Err(e)
+                if e.to_string()
+                    .contains("No such mempool or blockchain transaction") =>
+            {
+                return Ok((WitnessStatus::Unresolved, None));
+            }
+            Err(e) => return Err(WitnessResolverError::ResolverIssue(Some(txid), e.to_string())),
+            Ok(v) => v,
+        };
+        let forward =
+            iter::from_fn(|| self.inner.block_headers_pop().ok().flatten()).count() as isize;
+
+        let Some(tx_hex) = tx_details
+            .get("hex")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Vec::<u8>::from_hex(s).ok())
+        else {
+            return Err(WitnessResolverError::InvalidResolverData);
+        };
+        let tx: Tx = consensus::deserialize(&tx_hex)
+            .map_err(|_| WitnessResolverError::InvalidResolverData)?;
+
+        let Some(confirmations) = tx_details.get("confirmations") else {
+            return Ok((WitnessStatus::Resolved(tx, WitnessOrd::Tentative), None));
+        };
+        let confirmations = confirmations
+            .as_u64()
+            .and_then(|x| u32::try_from(x).ok())
+            .ok_or(WitnessResolverError::InvalidResolverData)?;
+        if confirmations == 0 {
+            return Ok((WitnessStatus::Resolved(tx, WitnessOrd::Tentative), None));
+        }
+        let block_time = tx_details
+            .get("blocktime")
+            .and_then(|v| v.as_i64())
+            .ok_or(WitnessResolverError::InvalidResolverData)?;
+
+        let tip_height =
+            u32::try_from(header.height).map_err(|_| WitnessResolverError::InvalidResolverData)?;
+        let height: isize = (tip_height - confirmations) as isize;
+        const SAFETY_MARGIN: isize = 1;
+        // first check from expected min to max height
+        let get_merkle_res = (1..=forward + 1)
+            // we need this under assumption that electrum was lying due to "DB desynchronization"
+            // since this have a very low probability we do that after everything else
+            .chain((1..=SAFETY_MARGIN).flat_map(|i| [i + forward + 1, 1 - i]))
+            .find_map(|offset| {
+                self.inner
+                    .transaction_get_merkle(&txid, (height + offset) as usize)
+                    .ok()
+            })
+            .ok_or_else(|| {
+                WitnessResolverError::ResolverIssue(
+                    Some(txid),
+                    s!("transaction can't be located in the blockchain"),
+                )
+            })?;
+
+        let tx_height = u32::try_from(get_merkle_res.block_height)
+            .map_err(|_| WitnessResolverError::InvalidResolverData)?;
+
+        let height = NonZeroU32::new(tx_height).ok_or(WitnessResolverError::InvalidResolverData)?;
+        let pos = WitnessPos::bitcoin(height, block_time)
+            .ok_or(WitnessResolverError::InvalidResolverData)?;
+
+        Ok((WitnessStatus::Resolved(tx, WitnessOrd::Mined(pos)), Some(get_merkle_res)))
+    }
 }
 
 impl ResolveWitness for ElectrumClient {
@@ -116,74 +207,47 @@ impl ResolveWitness for ElectrumClient {
     }
 
     fn resolve_witness(&self, txid: Txid) -> Result<WitnessStatus, WitnessResolverError> {
-        // We get the height of the tip of blockchain
-        let header = self
-            .inner
-            .block_headers_subscribe()
-            .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?;
+        self.resolve_witness_with_merkle(txid)
+            .map(|(status, _)| status)
+    }
 
-        // Now we get and parse transaction information to get the number of
-        // confirmations
-        let tx_details = match self.inner.raw_call("blockchain.transaction.get", vec![
-            Param::String(txid.to_string()),
-            Param::Bool(true),
-        ]) {
-            Err(e)
-                if e.to_string()
-                    .contains("No such mempool or blockchain transaction") =>
-            {
-                return Ok(WitnessStatus::Unresolved);
-            }
-            Err(e) => return Err(WitnessResolverError::ResolverIssue(Some(txid), e.to_string())),
-            Ok(v) => v,
+    fn get_block_header(&self, height: NonZeroU32) -> Result<Header, WitnessResolverError> {
+        self.inner
+            .block_header(height.get() as usize)
+            .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))
+    }
+}
+
+impl ResolveSpvProof for ElectrumClient {
+    fn resolve_spv_proof(&self, txid: Txid) -> Result<SpvProof, WitnessResolverError> {
+        let (status, merkle_res) = self.resolve_witness_with_merkle(txid)?;
+        let WitnessOrd::Mined(_) = status.witness_ord() else {
+            return Err(WitnessResolverError::ResolverIssue(
+                Some(txid),
+                s!("TX is unknown or not mined"),
+            ));
         };
-        let forward =
-            iter::from_fn(|| self.inner.block_headers_pop().ok().flatten()).count() as isize;
-
-        let Some(tx_hex) = tx_details
-            .get("hex")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Vec::<u8>::from_hex(s).ok())
-        else {
-            return Err(WitnessResolverError::InvalidResolverData);
-        };
-        let tx: Tx = consensus::deserialize(&tx_hex)
-            .map_err(|_| WitnessResolverError::InvalidResolverData)?;
-
-        let Some(confirmations) = tx_details.get("confirmations") else {
-            return Ok(WitnessStatus::Resolved(tx, WitnessOrd::Tentative));
-        };
-        let confirmations = confirmations
-            .as_u64()
-            .and_then(|x| u32::try_from(x).ok())
+        let res = merkle_res.ok_or(WitnessResolverError::InvalidResolverData)?;
+        let block_height = u32::try_from(res.block_height)
+            .ok()
+            .and_then(NonZeroU32::new)
             .ok_or(WitnessResolverError::InvalidResolverData)?;
-        if confirmations == 0 {
-            return Ok(WitnessStatus::Resolved(tx, WitnessOrd::Tentative));
-        }
-        let block_time = tx_details
-            .get("blocktime")
-            .and_then(|v| v.as_i64())
-            .ok_or(WitnessResolverError::InvalidResolverData)?;
-
-        let tip_height =
-            u32::try_from(header.height).map_err(|_| WitnessResolverError::InvalidResolverData)?;
-        let height: isize = (tip_height - confirmations) as isize;
-        const SAFETY_MARGIN: isize = 1;
-        // first check from expected min to max height
-        let get_merkle_res = (1..=forward + 1)
-            // we need this under assumption that electrum was lying due to "DB desynchronization"
-            // since this have a very low probability we do that after everything else
-            .chain((1..=SAFETY_MARGIN).flat_map(|i| [i + forward + 1, 1 - i]))
-            .find_map(|offset| self.inner.transaction_get_merkle(&txid, (height + offset) as usize).ok())
-            .ok_or_else(|| WitnessResolverError::ResolverIssue(Some(txid), s!("transaction can't be located in the blockchain")))?;
-
-        let tx_height = u32::try_from(get_merkle_res.block_height)
-            .map_err(|_| WitnessResolverError::InvalidResolverData)?;
-
-        let height = NonZeroU32::new(tx_height).ok_or(WitnessResolverError::InvalidResolverData)?;
-        let pos = WitnessPos::bitcoin(height, block_time)
-            .ok_or(WitnessResolverError::InvalidResolverData)?;
-
-        Ok(WitnessStatus::Resolved(tx, WitnessOrd::Mined(pos)))
+        let pos = u32::try_from(res.pos).map_err(|_| WitnessResolverError::InvalidResolverData)?;
+        // electrum returns merkle path elements in RPC (reversed) byte order
+        let merkle = res
+            .merkle
+            .into_iter()
+            .map(|mut node| {
+                node.reverse();
+                TxMerkleNode::from_byte_array(node)
+            })
+            .collect::<Vec<_>>();
+        let merkle =
+            Confined::try_from(merkle).map_err(|_| WitnessResolverError::InvalidResolverData)?;
+        Ok(SpvProof {
+            block_height,
+            pos,
+            merkle,
+        })
     }
 }

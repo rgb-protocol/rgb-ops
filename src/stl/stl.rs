@@ -24,6 +24,7 @@ pub use rgb::stl::{
     aluvm_stl, bp_core_stl, commit_verify_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT,
     LIB_ID_RGB_LOGIC,
 };
+use rgb::validation::TypeLibs;
 use rgb::Schema;
 pub use strict_types::stl::bitcoin_stl;
 use strict_types::stl::{bitcoin_tx_stl, std_stl, strict_types_stl};
@@ -34,7 +35,7 @@ use super::{
     AssetSpec, AttachmentType, BurnMeta, ContractSpec, ContractTerms, EmbeddedMedia, Error,
     IssueMeta, MediaType, RejectListUrl, TokenData, LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STORAGE,
 };
-use crate::containers::{Contract, Kit, Transfer};
+use crate::containers::{Contract, Transfer};
 use crate::persistence::{MemIndex, MemStash, MemState};
 use crate::stl::ProofOfReserves;
 use crate::LIB_NAME_RGB_OPS;
@@ -42,7 +43,7 @@ use crate::LIB_NAME_RGB_OPS;
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_STORAGE: &str =
-    "stl:0a2iNAse-TTouC6h-EKqG_xk-66KPKn4-xZp311r-LOYYuSo#secret-edison-flame";
+    "stl:e2fdotzE-xsU8WNF-c5w5qXV-ezAm3_D-ylZIfi_-v2a~Yp4#amanda-quiz-protect";
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
@@ -51,7 +52,7 @@ pub const LIB_ID_RGB_CONTRACT: &str =
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
-    "stl:T4c0yYp2-KWHQ1cm-tHnDKC0-PiE8508-ruJK2fP-EhgRP10#phone-cupid-chicago";
+    "stl:UMl0rygw-Epzt24F-13DDrU~-zTAAVyQ-rgyOvKj-ZQ6wDks#global-calypso-segment";
 
 /// Generates strict type library representation of RGB Ops data types.
 pub fn rgb_ops_stl() -> TypeLib {
@@ -68,7 +69,6 @@ pub fn rgb_ops_stl() -> TypeLib {
         rgb_logic_stl().to_dependency(),
     ])
     .transpile::<Contract>()
-    .transpile::<Kit>()
     .transpile::<Transfer>()
     .compile()
     .unwrap()
@@ -122,7 +122,10 @@ pub fn rgb_storage_stl() -> TypeLib {
 }
 
 #[derive(Debug)]
-pub struct StandardTypes(SymbolicSys);
+pub struct StandardTypes {
+    sys: SymbolicSys,
+    libs: TypeLibs,
+}
 
 impl StandardTypes {
     pub fn with(lib: TypeLib) -> Self {
@@ -132,20 +135,29 @@ impl StandardTypes {
 
     #[allow(clippy::result_large_err)]
     fn try_with(libs: impl IntoIterator<Item = TypeLib>) -> Result<Self, Error> {
+        let libs = libs.into_iter().collect::<Vec<_>>();
         let mut builder = SystemBuilder::new();
-        for lib in libs.into_iter() {
-            builder = builder.import(lib)?;
+        for lib in libs.iter() {
+            builder = builder.import(lib.clone())?;
         }
         let sys = builder.finalize()?;
-        Ok(Self(sys))
+        let libs = TypeLibs::from_iter_checked(libs.into_iter().map(|lib| (lib.id(), lib)));
+        Ok(Self { sys, libs })
     }
 
+    /// The type libraries this system was built from.
+    ///
+    /// This is what a schema definition ships: a recipient rebuilds the type
+    /// system from them, deriving every semantic id itself instead of trusting
+    /// the ones it was handed.
+    pub fn libs(&self) -> TypeLibs { self.libs.clone() }
+
     pub fn type_system(&self, schema: Schema) -> TypeSystem {
-        self.0.as_types().extract(schema.types()).unwrap()
+        self.sys.as_types().extract(schema.types()).unwrap()
     }
 
     pub fn get(&self, name: &'static str) -> SemId {
-        *self.0.resolve(name).unwrap_or_else(|| {
+        *self.sys.resolve(name).unwrap_or_else(|| {
             panic!("type '{name}' is absent in standard RGBContract type library")
         })
     }

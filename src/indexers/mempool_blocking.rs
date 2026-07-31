@@ -19,13 +19,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::num::NonZeroU32;
+
 use esplora_client::BlockingClient;
+use rgb::bitcoin::block::Header;
 use rgb::bitcoin::Txid;
-use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
+use rgbcore::validation::{ResolveWitness, SpvProof, WitnessResolverError, WitnessStatus};
 use rgbcore::ChainNet;
 
 use crate::indexers::esplora_blocking::esplora_client::Builder;
 use crate::indexers::esplora_blocking::EsploraClient;
+use crate::indexers::ResolveSpvProof;
 
 /// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
 /// It assumes that mempool.space exposes the same APIs as esplora.
@@ -62,6 +66,16 @@ impl ResolveWitness for MemPoolClient {
 
     fn resolve_witness(&self, txid: Txid) -> Result<WitnessStatus, WitnessResolverError> {
         self.inner.resolve_witness(txid)
+    }
+
+    fn get_block_header(&self, height: NonZeroU32) -> Result<Header, WitnessResolverError> {
+        self.inner.get_block_header(height)
+    }
+}
+
+impl ResolveSpvProof for MemPoolClient {
+    fn resolve_spv_proof(&self, txid: Txid) -> Result<SpvProof, WitnessResolverError> {
+        self.inner.resolve_spv_proof(txid)
     }
 }
 

@@ -24,13 +24,12 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use aluvm::library::{Lib, LibId};
-use amplify::confinement::Confined;
 use amplify::ByteArray;
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::commit_verify::mpc::{self, MerkleBlock};
 use rgb::dbc::tapret::TapretCommitment;
 use rgb::seals::txout::CloseMethod;
-use rgb::validation::Scripts;
+use rgb::validation::{SchemaDefError, SchemaDefinition, SchemaRules, Scripts, SpvProof};
 use rgb::{
     BundleId, ChainNet, ContractId, Genesis, GraphSeal, Identity, OpId, Schema, SchemaId,
     TransitionBundle, TransitionType, Txid,
@@ -39,7 +38,7 @@ use strict_types::typesys::UnknownType;
 use strict_types::{FieldName, TypeSystem};
 
 use crate::containers::{
-    Consignment, ConsignmentExt, Kit, SealWitness, SealWitnessMergeError, WitnessBundle,
+    Consignment, ConsignmentExt, SealWitness, SealWitnessMergeError, WitnessBundle,
 };
 use crate::contract::{ContractBuilder, TransitionBuilder};
 use crate::persistence::StoreTransaction;
@@ -96,7 +95,7 @@ pub enum StashInconsistency {
     /// contract {0} is unknown. Probably you haven't imported the contract yet.
     ContractAbsent(ContractId),
 
-    /// schema {0} is unknown.
+    /// schema {0} is unknown; perhaps you need to import its schema definition first.
     SchemaAbsent(SchemaId),
 
     /// transition {0} is absent.
@@ -121,6 +120,9 @@ pub enum StashInconsistency {
 pub enum StashDataError {
     /// schema {0} uses too many AluVM libraries.
     TooManyLibs(SchemaId),
+
+    /// the schema definition of {0} does not verify. {1}
+    SchemaDef(SchemaId, Box<SchemaDefError>),
 
     #[from]
     #[display(inner)]
@@ -191,6 +193,13 @@ impl<P: StashProvider> Stash<P> {
         Ok(self.provider.witness(witness_id)?)
     }
 
+    /// The types and the AluVM libraries a stored schema needs, out of the ones
+    /// the stash keeps for all of its schemata.
+    ///
+    /// The AluVM libraries are collected over the closure of the calls the
+    /// schema's entry points make, not just the entry points themselves: a
+    /// library may call into another, and [`SchemaRules::with`] requires
+    /// everything the schema can reach.
     pub(super) fn extract(&self, schema: &Schema) -> Result<(TypeSystem, Scripts), StashError<P>> {
         let type_iter = schema.types();
         let types = self
@@ -199,9 +208,14 @@ impl<P: StashProvider> Stash<P> {
             .map_err(StashError::ReadProvider)?
             .extract(type_iter)?;
 
-        let mut scripts = BTreeMap::new();
-        for id in schema.libs() {
+        let mut scripts = BTreeMap::<LibId, Lib>::new();
+        let mut queue = schema.libs().collect::<Vec<_>>();
+        while let Some(id) = queue.pop() {
+            if scripts.contains_key(&id) {
+                continue;
+            }
             let lib = self.provider.lib(id)?;
+            queue.extend(lib.libs.iter().copied());
             scripts.insert(id, lib.clone());
         }
         let scripts = Scripts::try_from(scripts)
@@ -210,18 +224,25 @@ impl<P: StashProvider> Stash<P> {
         Ok((types, scripts))
     }
 
+    /// The verified rules of a stored schema.
+    ///
+    /// The stash keeps the schema, the types and the AluVM libraries apart, so
+    /// the rules are reassembled - and re-checked - on each call.
+    pub(super) fn schema_rules(&self, schema_id: SchemaId) -> Result<SchemaRules, StashError<P>> {
+        let schema = self.schema(schema_id)?;
+        let (types, scripts) = self.extract(schema)?;
+        SchemaRules::with(schema.clone(), types, scripts)
+            .map_err(|e| StashDataError::SchemaDef(schema_id, Box::new(e)).into())
+    }
+
     pub(super) fn contract_builder(
         &self,
         issuer: Identity,
         schema_id: SchemaId,
         chain_net: ChainNet,
     ) -> Result<ContractBuilder, StashError<P>> {
-        let schema = self.schema(schema_id)?;
-
-        let (types, scripts) = self.extract(schema)?;
-
-        let builder = ContractBuilder::with(issuer, schema.clone(), types, scripts, chain_net);
-        Ok(builder)
+        let rules = self.schema_rules(schema_id)?;
+        Ok(ContractBuilder::with(issuer, rules, chain_net))
     }
 
     pub(super) fn transition_builder(
@@ -229,11 +250,12 @@ impl<P: StashProvider> Stash<P> {
         contract_id: ContractId,
         transition_name: impl Into<FieldName>,
     ) -> Result<TransitionBuilder, StashError<P>> {
-        let schema = self.provider.contract_schema(contract_id)?;
-        let (types, _) = self.extract(schema)?;
+        let schema_id = self.provider.genesis(contract_id)?.schema_id;
+        let rules = self.schema_rules(schema_id)?;
+        let (schema, types, _) = rules.into_parts();
 
         let transition_type = schema.transition_type(transition_name);
-        let builder = TransitionBuilder::with(contract_id, schema.clone(), transition_type, types);
+        let builder = TransitionBuilder::with(contract_id, schema, transition_type, types);
 
         Ok(builder)
     }
@@ -243,30 +265,49 @@ impl<P: StashProvider> Stash<P> {
         contract_id: ContractId,
         transition_type: TransitionType,
     ) -> Result<TransitionBuilder, StashError<P>> {
-        let schema = self.provider.contract_schema(contract_id)?;
+        let schema_id = self.provider.genesis(contract_id)?.schema_id;
+        let rules = self.schema_rules(schema_id)?;
+        let (schema, types, _) = rules.into_parts();
 
-        let (types, _) = self.extract(schema)?;
-
-        let builder = TransitionBuilder::with(contract_id, schema.clone(), transition_type, types);
+        let builder = TransitionBuilder::with(contract_id, schema, transition_type, types);
 
         Ok(builder)
     }
 
-    pub(super) fn consume_kit(&mut self, kit: Kit) -> Result<(), StashError<P>> {
+    /// Verifies a schema definition and stores what it defines.
+    ///
+    /// Verification is the only thing standing between an externally supplied
+    /// definition and the stash, so it happens here rather than at any of the
+    /// call sites: the definition is rejected unless its type libraries derive
+    /// exactly the semantic ids the schema commits to, and its AluVM libraries
+    /// match the ids the schema references.
+    ///
+    /// What gets stored is the *verified* form, taken apart: the type system
+    /// derived from the definition's type libraries - never the libraries
+    /// themselves, nor the ids they arrived under - plus the AluVM libraries
+    /// and the schema. The stash therefore holds the same three kinds of data
+    /// regardless of how a schema reached it.
+    pub(super) fn consume_schema_definition(
+        &mut self,
+        schema_def: SchemaDefinition,
+    ) -> Result<(), StashError<P>> {
+        let schema_id = schema_def.schema_id();
+        let rules = schema_def
+            .verify()
+            .map_err(|e| StashDataError::SchemaDef(schema_id, Box::new(e)))?;
+        let (schema, types, scripts) = rules.into_parts();
+
         self.provider
-            .consume_types(kit.types)
+            .consume_types(types)
             .map_err(StashError::WriteProvider)?;
-        for lib in kit.scripts {
+        for lib in scripts.into_values() {
             self.provider
                 .replace_lib(lib)
                 .map_err(StashError::WriteProvider)?;
         }
-
-        for schema in kit.schemata {
-            self.provider
-                .replace_schema(schema)
-                .map_err(StashError::WriteProvider)?;
-        }
+        self.provider
+            .replace_schema(schema)
+            .map_err(StashError::WriteProvider)?;
 
         Ok(())
     }
@@ -305,12 +346,7 @@ impl<P: StashProvider> Stash<P> {
             self.consume_witness_bundle(contract_id, witness_bundles)?;
         }
 
-        self.consume_kit(Kit {
-            version: consignment.version,
-            schemata: tiny_bset![consignment.schema],
-            types: consignment.types,
-            scripts: Confined::from_checked(consignment.scripts.release()),
-        })
+        Ok(())
     }
 
     fn consume_witness_bundle(
@@ -329,20 +365,32 @@ impl<P: StashProvider> Stash<P> {
         let merkle_block = MerkleBlock::with(&eanchor.mpc_proof, proto, msg)?;
 
         let witness = SealWitness {
-            public: witness_bundle.pub_witness.clone(),
+            tx: witness_bundle.tx,
             merkle_block,
             dbc_proof: eanchor.dbc_proof,
+            spv_proof: witness_bundle.spv_proof,
         };
         self.consume_witness(&witness)?;
 
         Ok(())
     }
 
+    /// Store `witness`, merging it into the one already known for the same TX, if any.
+    ///
+    /// An incoming SPV proof is adopted only when the stash has none: two proofs for the
+    /// same TX disagree exactly when a reorg moved it, and the one the stash holds is the
+    /// one that verified when the witnesses were last updated, whereas the incoming one
+    /// comes from a counterparty and has not been checked against the chain here. Dropping
+    /// it costs nothing: [`super::Stock::update_witnesses`] discards the stored proof as
+    /// soon as it sees the reorg, and the next retrieval replaces it.
     pub(crate) fn consume_witness(&mut self, witness: &SealWitness) -> Result<bool, StashError<P>> {
         let witness = match self.provider.witness(witness.witness_id()).cloned() {
-            Ok(w) => {
-                let mut w = w.clone();
-                w.merge_reveal(witness)?;
+            Ok(mut w) => {
+                let mut incoming = witness.clone();
+                if w.spv_proof.is_some() {
+                    incoming.spv_proof = None;
+                }
+                w.merge_reveal(&incoming)?;
                 w
             }
             Err(_) => witness.clone(),
@@ -351,6 +399,30 @@ impl<P: StashProvider> Stash<P> {
         self.provider
             .replace_witness(witness)
             .map_err(StashError::WriteProvider)
+    }
+
+    /// Set the SPV proof of the already-stored witness with the given `witness_id`,
+    /// dropping the one it has if `proof` is `None`.
+    ///
+    /// Returns whether anything changed.
+    pub(crate) fn set_spv_proof(
+        &mut self,
+        witness_id: Txid,
+        proof: Option<SpvProof>,
+    ) -> Result<bool, StashError<P>> {
+        let witness = self.provider.witness(witness_id)?;
+        if witness.spv_proof == proof {
+            return Ok(false);
+        }
+        let mut witness = witness.clone();
+        witness.spv_proof = proof;
+        self.begin_transaction()?;
+        self.provider
+            .replace_witness(witness)
+            .inspect_err(|_| self.rollback_transaction())
+            .map_err(StashError::WriteProvider)?;
+        self.commit_transaction()?;
+        Ok(true)
     }
 
     pub(crate) fn consume_bundle(

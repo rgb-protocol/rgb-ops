@@ -32,7 +32,7 @@ use rgb::{
     SchemaId, Transition, TransitionBundle, Txid, VoidState,
 };
 
-use crate::containers::{ConsignmentExt, ToWitnessId};
+use crate::containers::ConsignmentExt;
 use crate::contract::OutputAssignment;
 use crate::persistence::StoreTransaction;
 
@@ -166,17 +166,18 @@ impl<P: StateProvider> State<P> {
     pub fn update_from_consignment<R: ResolveWitness>(
         &mut self,
         consignment: impl ConsignmentExt,
+        schema: &Schema,
         resolver: R,
     ) -> Result<(), StateError<P>> {
         let mut state = self
             .as_provider_mut()
-            .register_contract(consignment.schema(), consignment.genesis())
+            .register_contract(schema, consignment.genesis())
             .map_err(StateError::WriteProvider)?;
         for witness_bundle in consignment.bundled_witnesses() {
             let bundle = witness_bundle.bundle();
             let bundle_id = bundle.bundle_id();
             for KnownTransition { transition, .. } in &bundle.known_transitions {
-                let witness_id = witness_bundle.pub_witness.to_witness_id();
+                let witness_id = witness_bundle.witness_id();
                 let witness_ord = resolver
                     .resolve_witness(witness_id)
                     .map_err(|e| StateError::Resolver(witness_id, e))?

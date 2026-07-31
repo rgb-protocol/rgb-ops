@@ -38,11 +38,15 @@ mod index;
 mod memory;
 #[cfg(feature = "fs")]
 pub mod fs;
+#[cfg(feature = "legacy")]
+mod legacy;
 
 pub use index::{
     Index, IndexError, IndexInconsistency, IndexProvider, IndexReadError, IndexReadProvider,
     IndexWriteError, IndexWriteProvider,
 };
+#[cfg(feature = "legacy")]
+pub use legacy::MemStashV0;
 pub use memory::{
     MemContract, MemContractState, MemError, MemGlobalState, MemIndex, MemStash, MemState,
 };

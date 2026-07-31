@@ -20,13 +20,13 @@
 // limitations under the License.
 
 use amplify::confinement::{Confined, NonEmptyOrdMap, U24};
+use rgb::bitcoin::Transaction as Tx;
 use rgb::{ContractId, Transition, TransitionBundle, Txid};
 use strict_encoding::{
     StrictDecode, StrictDeserialize, StrictDumb, StrictEncode, StrictSerialize, StrictType,
 };
 
 use super::SealWitness;
-use crate::containers::PubWitness;
 use crate::LIB_NAME_RGB_OPS;
 
 /// A batch of state transitions under different contracts which are associated
@@ -108,14 +108,12 @@ impl Fascia {
         }
     }
 
-    pub fn witness_id(&self) -> Txid { self.seal_witness.public.txid() }
+    pub fn witness_id(&self) -> Txid { self.seal_witness.witness_id() }
 
     pub fn into_bundles(self) -> impl IntoIterator<Item = (ContractId, TransitionBundle)> {
         self.bundles.into_iter()
     }
 
-    /// Replace the fascia's pub_witness with the one in input
-    pub fn update_pub_witness(&mut self, pub_witness: PubWitness) {
-        self.seal_witness.public = pub_witness;
-    }
+    /// Replace the fascia's witness transaction with the one in input
+    pub fn update_witness_tx(&mut self, tx: Tx) { self.seal_witness.tx = tx; }
 }

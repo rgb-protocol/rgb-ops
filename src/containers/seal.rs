@@ -20,8 +20,8 @@
 // limitations under the License.
 
 use rand::{rng, RngCore};
-use rgb::seals::txout::{BlindSeal, CloseMethod, SealTxid};
-use rgb::{GraphSeal, SecretSeal, TxoSeal, Vout};
+use rgb::seals::txout::CloseMethod;
+use rgb::{GraphSeal, Vout};
 
 use crate::LIB_NAME_RGB_OPS;
 
@@ -100,16 +100,4 @@ impl VoutSeal {
 
 impl From<VoutSeal> for GraphSeal {
     fn from(seal: VoutSeal) -> Self { Self::with_blinded_vout(seal.vout, seal.blinding) }
-}
-
-/// Seal used by operation builder which can be either revealed or concealed.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, From)]
-pub enum BuilderSeal<Seal: TxoSeal + Ord> {
-    Revealed(Seal),
-    #[from]
-    Concealed(SecretSeal),
-}
-
-impl<Id: SealTxid> From<BlindSeal<Id>> for BuilderSeal<BlindSeal<Id>> {
-    fn from(seal: BlindSeal<Id>) -> Self { BuilderSeal::Revealed(seal) }
 }

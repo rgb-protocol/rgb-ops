@@ -19,13 +19,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use amplify::confinement::Confined;
-use strict_types::TypeSystem;
-
-use crate::containers::{ContainerVer, Kit, ValidKit};
 use crate::contract::ContractData;
 use crate::persistence::ContractStateRead;
-use crate::validation::Scripts;
+use crate::validation::{SchemaDefinition, SchemaRules, Scripts, TypeLibs};
 use crate::Schema;
 
 /// The instances implementing this trait are used as wrappers around [`ContractData`] object,
@@ -38,16 +34,29 @@ pub trait IssuerWrapper {
     type Wrapper<S: ContractStateRead>: SchemaWrapper<S>;
 
     fn schema() -> Schema;
-    fn types() -> TypeSystem;
+    /// The strict type libraries the schema's semantic ids are defined in.
+    ///
+    /// The type system is derived from these, never shipped directly: that is
+    /// what lets a recipient authenticate the type definitions against the
+    /// semantic ids the schema commits to.
+    fn libs() -> TypeLibs;
     fn scripts() -> Scripts;
 
-    fn kit() -> ValidKit {
-        let kit = Kit {
-            version: ContainerVer::V0,
-            schemata: tiny_bset![Self::schema()],
-            types: Self::types(),
-            scripts: Confined::from_iter_checked(Self::scripts().release().into_values()),
-        };
-        kit.validate().expect("invalid construction")
+    /// The [`SchemaDefinition`] of this schema: the serializable form, carrying
+    /// the type libraries rather than the type system built from them.
+    fn schema_definition() -> SchemaDefinition {
+        SchemaDefinition::new(Self::schema(), Self::libs(), Self::scripts())
+    }
+
+    /// The verified [`SchemaRules`] of this schema.
+    ///
+    /// # Panics
+    ///
+    /// If the schema, its type libraries and its scripts are inconsistent,
+    /// which for a built-in schema is a bug.
+    fn schema_rules() -> SchemaRules {
+        Self::schema_definition()
+            .verify()
+            .expect("inconsistent built-in schema definition")
     }
 }

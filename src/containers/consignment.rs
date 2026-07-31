@@ -19,38 +19,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
 
-use aluvm::library::Lib;
-use amplify::confinement::{Confined, LargeVec, SmallOrdMap, SmallOrdSet};
+use amplify::confinement::{LargeVec, SmallOrdMap};
 use amplify::{ByteArray, Bytes32};
-use armor::{ArmorHeader, AsciiArmor, StrictArmor, StrictArmorError};
+use armor::{ArmorHeader, AsciiArmor, StrictArmor};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
+use rgb::bitcoin::Transaction as Tx;
 use rgb::commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
-    EAnchor, Failure, ResolveWitness, ValidationConfig, ValidationError, Validator,
-    CONSIGNMENT_MAX_LIBS,
+    EAnchor, Failure, ResolveWitness, SchemaRules, ValidationConfig, ValidationError, Validator,
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
-    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, Operation, Schema,
-    SchemaId, TransitionBundle, Txid,
+    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, Operation, SchemaId,
+    TransitionBundle, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{
     DeserializeError, SerializeError, StrictDeserialize, StrictDumb, StrictSerialize,
 };
-use strict_types::TypeSystem;
 
 use super::{
-    ContainerVer, SecretSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE, ASCII_ARMOR_CONTRACT,
-    ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
+    BuilderSeal, ConsignmentVer, TerminalSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE,
+    ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
+use crate::containers::anchors::SpvProof;
 use crate::contract::ContractData;
 use crate::info::ContractInfo;
 use crate::persistence::{MemContract, MemContractState};
@@ -62,7 +61,6 @@ pub type Contract = Consignment<false>;
 pub trait ConsignmentExt {
     fn contract_id(&self) -> ContractId;
     fn schema_id(&self) -> SchemaId;
-    fn schema(&self) -> &Schema;
     fn genesis(&self) -> &Genesis;
     fn bundled_witnesses(&self) -> impl Iterator<Item = &WitnessBundle>;
 }
@@ -73,9 +71,6 @@ impl<C: ConsignmentExt> ConsignmentExt for &C {
 
     #[inline]
     fn schema_id(&self) -> SchemaId { (*self).schema_id() }
-
-    #[inline]
-    fn schema(&self) -> &Schema { (*self).schema() }
 
     #[inline]
     fn genesis(&self) -> &Genesis { (*self).genesis() }
@@ -169,17 +164,20 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
         (self.consignment, self.validation_status)
     }
 
-    /// Return the [`ContractData`] from the consignment.
-    pub fn contract_data(&self) -> ContractData<MemContract> {
-        let mut unfiltered =
-            MemContractState::new(&self.consignment.schema, self.consignment.contract_id());
+    /// Build the [`ContractData`] of this consignment under the given rules.
+    ///
+    /// The rules must be the ones the consignment was validated against;
+    /// [`crate::persistence::Stock::consignment_data`] takes them from the
+    /// stash so that callers cannot pair a consignment with foreign rules.
+    pub(crate) fn build_contract_data(&self, rules: &SchemaRules) -> ContractData<MemContract> {
+        let mut unfiltered = MemContractState::new(rules.schema(), self.consignment.contract_id());
         unfiltered.add_operation(OrdOpRef::Genesis(&self.consignment.genesis));
 
         let filter = if TRANSFER {
             let mut filter = HashMap::new();
             for (transition, witness_id, bundle_id) in
                 self.bundles.iter().flat_map(|witness_bundle| {
-                    let witness_id = witness_bundle.pub_witness.txid();
+                    let witness_id = witness_bundle.witness_id();
                     let bundle_id = witness_bundle.bundle.bundle_id();
                     witness_bundle
                         .bundle
@@ -204,8 +202,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
         let info = ContractInfo::with(&self.consignment.genesis);
         ContractData {
             state,
-            schema: self.consignment.schema.clone(),
-            types: self.consignment.types.clone(),
+            rules: rules.clone(),
             info,
         }
     }
@@ -238,7 +235,7 @@ impl<const TRANSFER: bool> Deref for ValidConsignment<TRANSFER> {
 )]
 pub struct Consignment<const TRANSFER: bool> {
     /// Version.
-    pub version: ContainerVer,
+    pub version: ConsignmentVer,
 
     /// Specifies whether the consignment contains information about state
     /// transfer (true), or it is just a consignment with an information about a
@@ -246,8 +243,7 @@ pub struct Consignment<const TRANSFER: bool> {
     pub transfer: bool,
 
     #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    /// Set of secret seals which are history terminals.
-    pub terminals: SmallOrdMap<BundleId, SecretSeals>,
+    pub terminals: SmallOrdMap<BundleId, TerminalSeals>,
 
     /// Genesis data.
     pub genesis: Genesis,
@@ -256,16 +252,6 @@ pub struct Consignment<const TRANSFER: bool> {
     /// All bundled state transitions contained in the consignment, together
     /// with their witness data.
     pub bundles: LargeVec<WitnessBundle>,
-
-    /// Schema (plus root schema, if any) under which contract is issued.
-    pub schema: Schema,
-
-    /// Type system covering all types used in schema.
-    pub types: TypeSystem,
-
-    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    /// Collection of scripts used across consignment.
-    pub scripts: Confined<BTreeSet<Lib>, 0, CONSIGNMENT_MAX_LIBS>,
 }
 
 impl<const TRANSFER: bool> StrictSerialize for Consignment<TRANSFER> {}
@@ -285,9 +271,6 @@ impl<const TRANSFER: bool> CommitEncode for Consignment<TRANSFER> {
             self.bundles.iter().map(WitnessBundle::commit_id),
         ));
         e.commit_to_map(&self.terminals);
-
-        e.commit_to_serialized(&self.types.id());
-        e.commit_to_set(&SmallOrdSet::from_iter_checked(self.scripts.iter().map(|lib| lib.id())));
     }
 }
 
@@ -296,10 +279,7 @@ impl<const TRANSFER: bool> ConsignmentExt for Consignment<TRANSFER> {
     fn contract_id(&self) -> ContractId { self.genesis.contract_id() }
 
     #[inline]
-    fn schema_id(&self) -> SchemaId { self.schema.schema_id() }
-
-    #[inline]
-    fn schema(&self) -> &Schema { &self.schema }
+    fn schema_id(&self) -> SchemaId { self.genesis.schema_id }
 
     #[inline]
     fn genesis(&self) -> &Genesis { &self.genesis }
@@ -309,22 +289,21 @@ impl<const TRANSFER: bool> ConsignmentExt for Consignment<TRANSFER> {
 }
 
 impl<const TRANSFER: bool> ConsignmentApi for Consignment<TRANSFER> {
-    fn schema(&self) -> &Schema { &self.schema }
-
-    fn types(&self) -> &TypeSystem { &self.types }
-
-    fn scripts(&self) -> impl Iterator<Item = &Lib> { self.scripts.iter() }
-
     fn genesis(&self) -> &Genesis { &self.genesis }
 
-    fn bundles_info(&self) -> impl Iterator<Item = (&TransitionBundle, &EAnchor, Txid)> {
-        self.bundles.iter().map(
-            move |WitnessBundle {
-                      bundle,
-                      anchor,
-                      pub_witness,
-                  }| (bundle, anchor, pub_witness.txid()),
-        )
+    fn bundles_info(
+        &self,
+    ) -> impl Iterator<Item = (&TransitionBundle, &EAnchor, &Tx, Option<&SpvProof>)> {
+        self.bundles
+            .iter()
+            .map(|wb| (&wb.bundle, &wb.anchor, &wb.tx, wb.spv_proof.as_ref()))
+    }
+
+    fn terminals(&self) -> BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>> {
+        self.terminals
+            .iter()
+            .map(|(bundle_id, seals)| (*bundle_id, seals.into_iter().collect()))
+            .collect()
     }
 }
 
@@ -333,25 +312,30 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     pub fn consignment_id(&self) -> ConsignmentId { self.commit_id() }
 
     #[inline]
-    pub fn schema_id(&self) -> SchemaId { self.schema.schema_id() }
+    pub fn schema_id(&self) -> SchemaId { self.genesis.schema_id }
 
     pub fn reveal_terminal_seals<E>(
         mut self,
         f: impl Fn(SecretSeal) -> Result<Option<GraphSeal>, E>,
     ) -> Result<Self, E> {
-        // We need to clone since ordered set does not allow us to mutate members.
-        let mut bundles = LargeVec::with_capacity(self.bundles.len());
-        for mut witness_bundle in self.bundles {
-            for (bundle_id, secrets) in &self.terminals {
-                for secret in secrets {
-                    if let Some(seal) = f(secret)? {
-                        witness_bundle.bundle.reveal_seal(*bundle_id, seal);
-                    }
+        for witness_bundle in self.bundles.iter_mut() {
+            let bundle_id = witness_bundle.bundle().bundle_id();
+            let Some(terminal_seals) = self.terminals.get_mut(&bundle_id) else {
+                continue;
+            };
+            for terminal_seal in terminal_seals.iter_mut() {
+                let BuilderSeal::Concealed(secret) = *terminal_seal else {
+                    // Nothing to reveal for already revealed terminals
+                    continue;
+                };
+                if let Some(seal) = f(secret)? {
+                    // Reveal the seal both inside the bundle transitions and in
+                    // the terminal entry, keeping them consistent with each other
+                    witness_bundle.bundle.reveal_seal(seal);
+                    terminal_seal.reveal(seal);
                 }
             }
-            bundles.push(witness_bundle).ok();
         }
-        self.bundles = bundles;
         Ok(self)
     }
 
@@ -359,17 +343,16 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         Contract {
             version: self.version,
             transfer: false,
-            schema: self.schema,
-            types: self.types,
             genesis: self.genesis,
             terminals: none!(),
             bundles: none!(),
-            scripts: self.scripts,
         }
     }
 
+    /// Validates the consignment against caller-supplied [`SchemaRules`].
     pub fn validate(
         self,
+        rules: &SchemaRules,
         resolver: &impl ResolveWitness,
         validation_config: &ValidationConfig,
     ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
@@ -384,19 +367,11 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        // check bundle ids listed in terminals are present in the consignment
-        for bundle_id in self.terminals.keys() {
-            if !self.bundle_ids().any(|id| id == *bundle_id) {
-                return Err(ValidationError::InvalidConsignment(Failure::Custom(format!(
-                    "terminal bundle id {bundle_id} is not present in the consignment"
-                ))));
-            }
-        }
-
         let status = Validator::<MemContract<MemContractState>, _, _>::validate(
             &self,
+            rules,
             &resolver,
-            (&self.schema, self.contract_id()),
+            (rules.schema(), self.contract_id()),
             validation_config,
         )?;
 
@@ -410,25 +385,12 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     pub fn modify_bundle<F>(&mut self, witness_id: Txid, modifier: F) -> bool
     where F: Fn(&mut WitnessBundle) {
         let mut found = false;
-        let mut modified_bundles = Vec::new();
-
-        let bundles: Vec<_> = self.bundles.iter().cloned().collect();
-
-        for bundle in bundles {
+        for bundle in self.bundles.iter_mut() {
             if bundle.witness_id() == witness_id {
-                let mut modified_bundle = bundle.clone();
-                modifier(&mut modified_bundle);
-                modified_bundles.push(modified_bundle);
+                modifier(bundle);
                 found = true;
-            } else {
-                modified_bundles.push(bundle);
             }
         }
-
-        if found {
-            self.bundles = Confined::try_from_iter(modified_bundles).unwrap();
-        }
-
         found
     }
 }
@@ -446,7 +408,7 @@ impl<const TRANSFER: bool> StrictArmor for Consignment<TRANSFER> {
                 if self.transfer { s!("transfer") } else { s!("contract") },
             ),
             ArmorHeader::new(ASCII_ARMOR_CONTRACT, self.contract_id().to_string()),
-            ArmorHeader::new(ASCII_ARMOR_SCHEMA, self.schema.schema_id().to_string()),
+            ArmorHeader::new(ASCII_ARMOR_SCHEMA, self.schema_id().to_string()),
         ];
         if !self.terminals.is_empty() {
             headers.push(ArmorHeader::with(
@@ -455,19 +417,6 @@ impl<const TRANSFER: bool> StrictArmor for Consignment<TRANSFER> {
             ));
         }
         headers
-    }
-    fn parse_armor_headers(&mut self, headers: Vec<ArmorHeader>) -> Result<(), StrictArmorError> {
-        // TODO: Check remaining headers - terminals, version, contract, schema
-        if let Some(header) = headers
-            .iter()
-            .find(|header| header.title == ASCII_ARMOR_CONSIGNMENT_TYPE)
-        {
-            if self.transfer && header.values.len() != 1 && header.values[0] != "transfer" {
-                // TODO: Add header-specific errors to StrictArmorError
-                // return Err(Strict)
-            }
-        }
-        Ok(())
     }
 }
 
@@ -568,17 +517,13 @@ impl<const TRANSFER: bool> TryFrom<UncheckedConsignment<TRANSFER>> for Consignme
 #[derive(Deserialize)]
 #[serde(crate = "serde_crate", rename_all = "camelCase")]
 struct ConsignmentShadow {
-    version: ContainerVer,
+    version: ConsignmentVer,
     transfer: bool,
     #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    terminals: SmallOrdMap<BundleId, SecretSeals>,
+    terminals: SmallOrdMap<BundleId, TerminalSeals>,
     genesis: Genesis,
     #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
     bundles: LargeVec<WitnessBundle>,
-    schema: Schema,
-    types: TypeSystem,
-    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    scripts: Confined<BTreeSet<Lib>, 0, CONSIGNMENT_MAX_LIBS>,
 }
 
 #[cfg(feature = "serde")]
@@ -591,24 +536,57 @@ impl<'de, const TRANSFER: bool> serde_crate::Deserialize<'de> for UncheckedConsi
             terminals: shadow.terminals,
             genesis: shadow.genesis,
             bundles: shadow.bundles,
-            schema: shadow.schema,
-            types: shadow.types,
-            scripts: shadow.scripts,
         }))
     }
 }
 
 #[cfg(test)]
 mod test {
+    #[cfg(feature = "serde")]
+    use std::marker::PhantomData;
+
+    use amplify::confinement::Confined;
+
     use super::*;
+    #[cfg(feature = "serde")]
+    use crate::containers::test_fixtures::almost_default_contract;
 
     #[test]
     fn contract_str_round_trip() {
         let s = include_str!("../../asset/armored_contract.default");
-        let mut contract = Contract::from_str(s).unwrap();
+        let contract = Contract::from_str(s).unwrap();
         assert_eq!(contract.to_string(), s.replace('\r', ""), "contract string round trip fails");
-        contract.transfer = true;
-        eprintln!("{contract}");
+    }
+
+    #[test]
+    fn consignment_strict_encode_round_trip() {
+        let consignment = Consignment::<false>::strict_dumb();
+        let bytes = consignment
+            .to_strict_serialized::<{ usize::MAX }>()
+            .unwrap();
+        assert_eq!(bytes[0], 1, "consignment encoding must start with the V1 version byte");
+        let decoded =
+            Consignment::<false>::from_strict_serialized::<{ usize::MAX }>(bytes).unwrap();
+        assert_eq!(decoded, consignment, "strict encode round trip fails");
+    }
+
+    #[test]
+    fn strict_decode_rejects_v0() {
+        // A V0 consignment is not representable in memory (`ConsignmentVer` has
+        // no V0 variant), so V0 is rejected at the codec level: the version
+        // byte is decoded through `try_from_u8`, which only accepts 1.
+        let consignment = Consignment::<false>::strict_dumb();
+        let mut bytes = consignment
+            .to_strict_serialized::<{ usize::MAX }>()
+            .unwrap()
+            .release();
+        assert_eq!(bytes[0], 1, "consignment must be encoded as version 1");
+
+        bytes[0] = 0; // pretend this is a legacy V0 stream
+        let res = Consignment::<false>::from_strict_serialized::<{ usize::MAX }>(
+            Confined::try_from(bytes).unwrap(),
+        );
+        assert!(res.is_err(), "a V0 stream must not decode as a V1 consignment");
     }
 
     #[test]
@@ -702,28 +680,103 @@ Check-SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         .unwrap_err();
 
         // Wrong type
-        // TODO: Uncomment once ASCII headers get checked
-        /*assert!(matches!(
-                    Transfer::from_str(
-                        r#"-----BEGIN RGB CONSIGNMENT-----
-        Id: rgb:csg:9jMKgkmP-alPghZC-bu65ctP-GT5tKgM-cAbaTLT-rhu8xQo#urban-athena-adam
-        Version: 2
-        Type: contract
-        Contract: rgb:T24t0N1D-eiInTgb-BXlrrXz-$7OgV6n-WJWHPUD-BWNuqZw
-        Schema: rgb:sch:CyqM42yAdM1moWyNZPQedAYt73BM$k9z$dKLUXY1voA#cello-global-deluxe
-        Check-SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-
-        0s#O3000000000000000000000000000000000000000000000000000000D0CRI`I$>^aZh38Qb#nj!
-        0000000000000000000000d59ZDjxe00000000dDb8~4rVQz13d2MfXa{vGU00000000000000000000
-        0000000000000
-
-        -----END RGB CONSIGNMENT-----"#
-                    ),
-                    Err(ConsignmentParseError::Type)
-                ));*/
         assert!(matches!(
             Transfer::from_str(include_str!("../../asset/armored_contract.default")),
             Err(ConsignmentParseError::Type)
         ));
+    }
+
+    /// Verifies that V1 strict encoding and commit ID are stable across refactors.
+    ///
+    /// Run after any change that touches serialization or commitment logic to
+    /// confirm V1 compatibility is intact.
+    ///
+    /// Prerequisites: run `test_fixtures::generate_v1_golden` (or
+    /// `test_fixtures::regenerate_fixtures`)
+    /// first and commit the asset files.
+    #[test]
+    fn v1_wire_stability() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+
+        let golden_bytes = std::fs::read(format!("{dir}/asset/contract_golden.bin"))
+            .expect("missing golden; run: cargo test -p rgb-ops generate_v1_golden -- --ignored");
+        let golden_id = std::fs::read_to_string(format!("{dir}/asset/contract_golden_id.txt"))
+            .expect("missing golden; run: cargo test -p rgb-ops generate_v1_golden -- --ignored");
+        let golden_id = golden_id.trim();
+
+        let contract =
+            Contract::from_str(include_str!("../../asset/armored_contract.default")).unwrap();
+
+        let bytes = contract.to_strict_serialized::<{ usize::MAX }>().unwrap();
+        assert_eq!(bytes.as_slice(), golden_bytes.as_slice(), "V1 strict encoding changed");
+
+        let commit_id = contract.consignment_id().to_string();
+        assert_eq!(commit_id, golden_id, "V1 commit ID changed");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn v1_json_round_trip() {
+        let contract = almost_default_contract();
+
+        let json = serde_json::to_string(&contract).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(json_val.get("types").is_none(), "V1 JSON must not include types field");
+        assert!(json_val.get("schema").is_none(), "V1 JSON must not include schema field");
+        assert!(json_val.get("scripts").is_none(), "V1 JSON must not include scripts field");
+        assert_eq!(json_val["version"], serde_json::json!("v1"));
+
+        let roundtripped = serde_json::from_str::<UncheckedContract>(&json)
+            .unwrap()
+            .into_checked()
+            .unwrap();
+        assert_eq!(roundtripped, contract, "V1 JSON round trip fails");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn v1_json_rejects_v0_version() {
+        let contract = almost_default_contract();
+
+        let mut json_val: serde_json::Value = serde_json::to_value(&contract).unwrap();
+        json_val["version"] = serde_json::json!("v0");
+        let json = serde_json::to_string(&json_val).unwrap();
+        let result = serde_json::from_str::<UncheckedContract>(&json);
+        assert!(result.is_err(), "V0 JSON should fail to deserialize as a V1 consignment");
+    }
+
+    /// `Consignment` must not be reachable through serde: deserializing one
+    /// directly would skip [`UncheckedConsignment::into_checked`] and let a
+    /// value violating a `Confined` bound through (`Confined` derives a
+    /// passthrough `Deserialize` that does not re-check its length bounds).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn consignment_has_no_deserialize_impl() {
+        struct Probe<T>(PhantomData<T>);
+
+        impl<T> Probe<T> {
+            fn new() -> Self { Probe(PhantomData) }
+        }
+
+        impl<T: for<'de> serde_crate::Deserialize<'de>> Probe<T> {
+            fn has_deserialize(&self) -> bool { true }
+        }
+
+        trait NoDeserialize {
+            fn has_deserialize(&self) -> bool { false }
+        }
+        impl<T> NoDeserialize for Probe<T> {}
+
+        assert!(
+            !Probe::<Contract>::new().has_deserialize(),
+            "Consignment must not implement Deserialize: it would bypass into_checked"
+        );
+        assert!(
+            !Probe::<Transfer>::new().has_deserialize(),
+            "Consignment must not implement Deserialize: it would bypass into_checked"
+        );
+        // the sanctioned entry points do implement it
+        assert!(Probe::<UncheckedContract>::new().has_deserialize());
+        assert!(Probe::<UncheckedTransfer>::new().has_deserialize());
     }
 }

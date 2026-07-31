@@ -19,7 +19,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{btree_map, BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{btree_map, hash_map, BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Debug;
@@ -27,34 +27,37 @@ use std::num::NonZeroU32;
 
 use amplify::confinement::{Confined, LargeOrdSet};
 use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
-use rgb::bitcoin::{OutPoint as Outpoint, Txid};
+use rgb::bitcoin::block::Header;
+use rgb::bitcoin::{OutPoint as Outpoint, Transaction as Tx, Txid};
 use rgb::dbc::{Anchor, Proof};
 use rgb::validation::{
-    OpoutsDagData, OpoutsDagInfo, ResolveWitness, UnsafeHistoryMap, WitnessOrdProvider,
-    WitnessResolverError, WitnessStatus,
+    OpoutsDagData, OpoutsDagInfo, ResolveWitness, SchemaDefinition, SchemaRules, SpvProof,
+    UnsafeHistoryMap, WitnessOrdProvider, WitnessResolverError, WitnessStatus,
 };
-use rgb::vm::WitnessOrd;
+use rgb::vm::{WitnessOrd, WitnessPos};
 use rgb::{
-    validation, AssignmentType, BundleId, ChainNet, ContractId, Genesis, GraphSeal, Identity,
-    KnownTransition, OpId, Operation, Opout, OutputSeal, Schema, SchemaId, SecretSeal, Transition,
-    TransitionType, TxoSeal, UnrelatedTransition,
+    AssignmentType, BundleId, ChainNet, ContractId, ExposedSeal, Genesis, GraphSeal, Identity,
+    KnownTransition, Layer1, OpId, Operation, Opout, OutputSeal, Schema, SchemaId, SecretSeal,
+    Transition, TransitionType, UnrelatedTransition,
 };
 use strict_types::FieldName;
 
 use super::{
     ContractStateRead, Index, IndexError, IndexInconsistency, IndexProvider, IndexReadProvider,
-    IndexWriteProvider, MemIndex, MemStash, MemState, Stash, StashDataError, StashError,
-    StashInconsistency, StashProvider, StashReadProvider, StashWriteProvider, State, StateError,
-    StateInconsistency, StateProvider, StateReadProvider, StateWriteProvider, StoreTransaction,
+    IndexWriteProvider, MemContract, MemIndex, MemStash, MemState, Stash, StashDataError,
+    StashError, StashInconsistency, StashProvider, StashReadProvider, StashWriteProvider, State,
+    StateError, StateInconsistency, StateProvider, StateReadProvider, StateWriteProvider,
+    StoreTransaction,
 };
 use crate::containers::{
-    Consignment, ConsignmentExt, ContainerVer, Contract, Fascia, Kit, SealWitness, SecretSeals,
-    ToWitnessId, Transfer, ValidConsignment, ValidContract, ValidKit, ValidTransfer, WitnessBundle,
+    BuilderSeal, Consignment, ConsignmentExt, ConsignmentVer, Contract, Fascia, SealWitness,
+    TerminalSeals, Transfer, ValidConsignment, ValidContract, ValidTransfer, WitnessBundle,
 };
 use crate::contract::{
     AllocatedState, BuilderError, ContractBuilder, ContractData, IssuerWrapper, LinkError,
     LinkableIssuerWrapper, LinkableSchemaWrapper, SchemaWrapper, TransitionBuilder,
 };
+use crate::indexers::ResolveSpvProof;
 use crate::info::{ContractInfo, SchemaInfo};
 use crate::MergeRevealError;
 
@@ -66,6 +69,45 @@ type ConsignmentWithOptDag<const TRANSFER: bool> = (Consignment<TRANSFER>, Optio
 
 /// Consignment and its operations DAG
 pub type ConsignmentWithDag<const TRANSFER: bool> = (Consignment<TRANSFER>, OpoutsDagData);
+
+/// What a consignment must include and how it is composed, threaded through the
+/// composition helpers of [`Stock`].
+struct ConsignParams<'a> {
+    /// Seals whose state must be included and reported as terminals.
+    outputs: &'a [OutputSeal],
+    /// Blinded seals whose state must be included and reported as terminals.
+    secret_seals: &'a [SecretSeal],
+    /// If set, restrict the consignment to bundles closed by this witness.
+    ///
+    /// Unused when composing from a [`Fascia`], which carries its own witness.
+    witness_id: Option<Txid>,
+    /// See [`Stock::transfer`].
+    spv_resolver: Option<&'a dyn ResolveSpvProof>,
+    /// Whether to also build the operations DAG.
+    build_opouts_dag: bool,
+}
+
+/// Outcome of checking a witness against the SPV proof stored for it.
+enum SpvCheck {
+    /// The proof verifies against the block at its height in the best chain.
+    Confirmed(WitnessStatus),
+    /// There is no proof: nothing to check.
+    Absent,
+    /// There is a proof, but the resolver serves no block headers to check it against.
+    Uncheckable,
+    /// The proof does not verify: a reorg replaced the block it points at.
+    Refuted,
+}
+
+/// Outcome of updating the ord of a witness.
+enum WitnessOrdChange {
+    /// The ord did not change, or changed without crossing validity.
+    Kept,
+    /// The witness became valid; carries the bundles it is known to witness.
+    BecameValid(BTreeSet<BundleId>),
+    /// The witness became invalid; carries the bundles it is known to witness.
+    BecameInvalid(BTreeSet<BundleId>),
+}
 
 #[derive(Debug, Display, Error, From)]
 #[display(inner)]
@@ -83,6 +125,14 @@ pub enum StockError<
     IndexWrite(<P as IndexWriteProvider>::Error),
     StateRead(<H as StateReadProvider>::Error),
     StateWrite(<H as StateWriteProvider>::Error),
+
+    #[display(doc_comments)]
+    /// schema {0} is not known to this stash.
+    ///
+    /// Consignments carry only their schema id, so the schema must be
+    /// imported out-of-band (via a schema definition) before a contract
+    /// using it can be issued or accepted.
+    SchemaNotImported(SchemaId),
 
     #[from]
     #[display(doc_comments)]
@@ -324,6 +374,7 @@ macro_rules! stock_err_conv {
             StockError::IndexInconsistency(e) => StockError::IndexInconsistency(e),
             StockError::WitnessUnresolved(id, e) => StockError::WitnessUnresolved(id, e),
             StockError::ContractLinkError(e) => StockError::ContractLinkError(e),
+            StockError::SchemaNotImported(e) => StockError::SchemaNotImported(e),
         }
     };
 }
@@ -480,6 +531,20 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         Ok(self.stash.schema(schema_id)?)
     }
 
+    /// Loads a schema which is required to be already imported, reporting its
+    /// absence as [`StockError::SchemaNotImported`] rather than as a stash
+    /// inconsistency: a missing schema means the user has not imported the
+    /// schema definition, not that the storage is corrupted.
+    fn load_imported_schema(&self, schema_id: SchemaId) -> Result<&Schema, StockError<S, H, P>> {
+        match self.stash.schema(schema_id) {
+            Ok(schema) => Ok(schema),
+            Err(StashError::Inconsistency(StashInconsistency::SchemaAbsent(id))) => {
+                Err(StockError::SchemaNotImported(id))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn contracts(
         &self,
     ) -> Result<impl Iterator<Item = ContractInfo> + '_, StockError<S, H, P>> {
@@ -503,11 +568,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     fn contract_raw(
         &self,
         contract_id: ContractId,
-    ) -> Result<(&Schema, H::ContractRead<'_>, ContractInfo), StockError<S, H, P>> {
+    ) -> Result<(SchemaId, H::ContractRead<'_>, ContractInfo), StockError<S, H, P>> {
         let state = self.state.contract_state(contract_id)?;
         let schema_id = state.schema_id();
-        let schema = self.stash.schema(schema_id)?;
-        Ok((schema, state, self.contract_info(contract_id)?))
+        Ok((schema_id, state, self.contract_info(contract_id)?))
     }
 
     pub fn contract_info(
@@ -546,16 +610,24 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<ContractData<H::ContractRead<'_>>, StockError<S, H, P>> {
-        let (schema, state, info) = self.contract_raw(contract_id)?;
+        let (schema_id, state, info) = self.contract_raw(contract_id)?;
+        let rules = self.schema_rules(schema_id)?;
 
-        let (types, _) = self.stash.extract(schema)?;
+        Ok(ContractData { state, rules, info })
+    }
 
-        Ok(ContractData {
-            state,
-            schema: schema.clone(),
-            types,
-            info,
-        })
+    /// Returns the contract data of a validated consignment, reading the rules
+    /// it was issued under from the stash.
+    ///
+    /// The schema must have been imported (see
+    /// [`Stock::import_schema_definition`]): a consignment carries neither the
+    /// schema nor the type system, only the schema id its genesis commits to.
+    pub fn consignment_data<const TRANSFER: bool>(
+        &self,
+        consignment: &ValidConsignment<TRANSFER>,
+    ) -> Result<ContractData<MemContract>, StockError<S, H, P>> {
+        let rules = self.schema_rules(consignment.genesis.schema_id)?;
+        Ok(consignment.build_contract_data(&rules))
     }
 
     pub fn contract_assignments_for(
@@ -631,26 +703,38 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .transition_builder_raw(contract_id, transition_type)?)
     }
 
-    pub fn export_schema(&self, schema_id: SchemaId) -> Result<ValidKit, StockError<S, H, P>> {
-        let mut kit = Kit::default();
-        let schema = self.schema(schema_id)?;
-        kit.schemata.push(schema.clone()).expect("single item");
-        let (types, scripts) = self.stash.extract(schema)?;
-        kit.scripts
-            .extend(scripts.into_values())
-            .expect("type guarantees");
-        kit.types = types;
-        Ok(kit.validate().expect("stock produced invalid kit"))
+    /// The verified [`SchemaRules`] for `schema_id`.
+    ///
+    /// The stash keeps the schema, the type system and the AluVM libraries
+    /// apart, so the rules are reassembled - and re-checked - on each call.
+    pub fn schema_rules(&self, schema_id: SchemaId) -> Result<SchemaRules, StockError<S, H, P>> {
+        Ok(self.stash.schema_rules(schema_id)?)
     }
 
     pub fn export_contract(
         &self,
         contract_id: ContractId,
     ) -> Result<Contract, StockError<S, H, P, ConsignError>> {
-        self.consign::<false>(contract_id, [], vec![], [], None, false)
-            .map(|(c, _)| c)
+        self.consign::<false>(contract_id, [], &ConsignParams {
+            outputs: &[],
+            secret_seals: &[],
+            witness_id: None,
+            spv_resolver: None,
+            build_opouts_dag: false,
+        })
+        .map(|(c, _)| c)
     }
 
+    /// Compose a transfer consignment.
+    ///
+    /// `spv_resolver` controls the SPV proofs the consignment carries, letting the
+    /// receiver verify the witnesses from block headers alone. With `None` only the proofs
+    /// already in the stash are used; with `Some` the missing ones are retrieved on the
+    /// spot, so that a wallet need not keep a proof stored for every witness it knows.
+    ///
+    /// Retrieval is best-effort: a witness whose proof cannot be obtained simply travels
+    /// without one, which is always legal. In particular the witness of the transfer being
+    /// composed has no proof, since the consignment is handed over before it is broadcast.
     pub fn transfer(
         &self,
         contract_id: ContractId,
@@ -658,11 +742,19 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
+        spv_resolver: Option<&dyn ResolveSpvProof>,
     ) -> Result<Transfer, StockError<S, H, P, ConsignError>> {
-        self.consign(contract_id, outputs, secret_seals, opids, witness_id, false)
-            .map(|(c, _)| c)
+        self.consign(contract_id, opids, &ConsignParams {
+            outputs: outputs.as_ref(),
+            secret_seals: secret_seals.as_ref(),
+            witness_id,
+            spv_resolver,
+            build_opouts_dag: false,
+        })
+        .map(|(c, _)| c)
     }
 
+    /// See [`Stock::transfer`] for `spv_resolver`.
     pub fn transfer_with_dag(
         &self,
         contract_id: ContractId,
@@ -670,9 +762,16 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         witness_id: Option<Txid>,
+        spv_resolver: Option<&dyn ResolveSpvProof>,
     ) -> Result<ConsignmentWithDag<true>, StockError<S, H, P, ConsignError>> {
-        self.consign(contract_id, outputs, secret_seals, opids, witness_id, true)
-            .map(|(c, d)| (c, d.unwrap()))
+        self.consign(contract_id, opids, &ConsignParams {
+            outputs: outputs.as_ref(),
+            secret_seals: secret_seals.as_ref(),
+            witness_id,
+            spv_resolver,
+            build_opouts_dag: true,
+        })
+        .map(|(c, d)| (c, d.unwrap()))
     }
 
     fn sort_bundles(
@@ -807,15 +906,9 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     fn consign<const TRANSFER: bool>(
         &self,
         contract_id: ContractId,
-        outputs: impl AsRef<[OutputSeal]>,
-        secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
-        witness_id: Option<Txid>,
-        build_opouts_dag: bool,
+        params: &ConsignParams,
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
-        let outputs = outputs.as_ref();
-        let secret_seals = secret_seals.as_ref();
-
         // Collect initial set of opids to include
         let mut opids = opids.into_iter().collect::<HashSet<_>>();
         opids.extend(
@@ -824,30 +917,37 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 .into_iter()
                 .chain(
                     self.index
-                        .opouts_by_outputs(contract_id, outputs.iter().copied())?,
+                        .opouts_by_outputs(contract_id, params.outputs.iter().copied())?,
                 )
                 .chain(
                     self.index
-                        .opouts_by_terminals(secret_seals.iter().copied())?,
+                        .opouts_by_terminals(params.secret_seals.iter().copied())?,
                 )
                 .map(|opout| opout.op),
         );
 
-        self.consign_operations(contract_id, opids, secret_seals, witness_id, build_opouts_dag)
+        self.consign_operations(contract_id, opids, params)
     }
 
     fn consign_operations<const TRANSFER: bool>(
         &self,
         contract_id: ContractId,
         opids: impl IntoIterator<Item = OpId>,
-        secret_seals: &[SecretSeal],
-        witness_id: Option<Txid>,
-        build_opouts_dag: bool,
+        params: &ConsignParams,
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
+        let ConsignParams {
+            outputs,
+            secret_seals,
+            witness_id,
+            ..
+        } = params;
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut bundles = BTreeMap::<BundleId, (WitnessBundle, u32)>::new();
+        // witness selected for each bundle, cached since several opids may share a bundle
+        let mut bundle_witnesses = HashMap::<BundleId, (Txid, WitnessOrd)>::new();
         let mut parent_opids = Vec::<OpId>::new();
-        let mut bundle_sec_seals: BTreeMap<BundleId, BTreeSet<SecretSeal>> = BTreeMap::new();
+        let mut terminal_seals: BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>> =
+            BTreeMap::new();
         for opid in opids {
             if opid == contract_id {
                 continue; // we skip genesis since it will be present anywhere
@@ -857,21 +957,35 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
 
+            let (witness_ids, bundle_contract_id) = self.index.bundle_info(bundle_id)?;
+            let witness_ids = witness_ids.collect::<Vec<_>>();
             // skip bundles not associated to the terminals witness
-            if let Some(witness_id) = witness_id {
-                let (mut witness_ids, _) = self.index.bundle_info(bundle_id)?;
-                if !witness_ids.any(|w| w == witness_id) {
-                    continue;
-                }
+            if witness_id.is_some_and(|wid| !witness_ids.contains(&wid)) {
+                continue;
             }
+            let bundle_witness = match bundle_witnesses.get(&bundle_id) {
+                Some(&witness) => witness,
+                None => {
+                    let witness = self.state.select_valid_witness(&witness_ids)?;
+                    bundle_witnesses.insert(bundle_id, witness);
+                    witness
+                }
+            };
+            let (bundle_witness_id, _) = bundle_witness;
 
             parent_opids.extend(transition.inputs().iter().map(|input| input.op));
 
-            // 1.4. Collect secret seals for this bundle to add to the consignment terminals
+            // 1.4. Collect terminal seals for this bundle to add to the consignment terminals.
             for typed_assignments in transition.assignments.values() {
-                for seal in typed_assignments.to_confidential_seals() {
-                    if secret_seals.contains(&seal) {
-                        bundle_sec_seals.entry(bundle_id).or_default().insert(seal);
+                for index in 0..typed_assignments.len_u16() {
+                    let seal = *typed_assignments.seal_at(index).expect("cycling indexes");
+                    let include_terminal = match seal {
+                        BuilderSeal::Revealed(revealed_seal) => outputs
+                            .contains(&revealed_seal.to_output_seal_or_default(bundle_witness_id)),
+                        BuilderSeal::Concealed(secret_seal) => secret_seals.contains(&secret_seal),
+                    };
+                    if include_terminal {
+                        terminal_seals.entry(bundle_id).or_default().insert(seal);
                     }
                 }
             }
@@ -879,10 +993,19 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition.clone())?;
             } else {
-                bundles.insert(bundle_id, self.witness_bundle(bundle_id, opid)?);
+                bundles.insert(
+                    bundle_id,
+                    self.witness_bundle(
+                        bundle_id,
+                        opid,
+                        bundle_contract_id,
+                        bundle_witness,
+                        params.spv_resolver,
+                    )?,
+                );
             };
         }
-        self.consign_bundles(contract_id, bundles, parent_opids, bundle_sec_seals, build_opouts_dag)
+        self.consign_bundles(contract_id, bundles, parent_opids, terminal_seals, params)
     }
 
     fn consign_bundles<const TRANSFER: bool>(
@@ -890,8 +1013,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         contract_id: ContractId,
         mut bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
         mut parent_opids: Vec<OpId>,
-        bundle_sec_seals: BTreeMap<BundleId, BTreeSet<SecretSeal>>,
-        build_opouts_dag: bool,
+        terminal_seals: BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>>,
+        params: &ConsignParams,
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, H, P, ConsignError>> {
         // 2. Collect all state transitions between terminals and genesis
         let mut seen_ids = HashSet::new();
@@ -908,51 +1031,59 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition.clone())?;
             } else {
-                bundles.insert(bundle_id, self.witness_bundle(bundle_id, id)?);
+                let (witness_ids, bundle_contract_id) = self.index.bundle_info(bundle_id)?;
+                let bundle_witness = self.state.select_valid_witness(witness_ids)?;
+                bundles.insert(
+                    bundle_id,
+                    self.witness_bundle(
+                        bundle_id,
+                        id,
+                        bundle_contract_id,
+                        bundle_witness,
+                        params.spv_resolver,
+                    )?,
+                );
             };
         }
 
         let genesis = self.stash.genesis(contract_id)?.clone();
 
-        let schema = self.stash.schema(genesis.schema_id)?.clone();
+        // fail early: a consignment can only be produced for a schema this
+        // stash knows, since the consignment itself carries just its id
+        self.load_imported_schema(genesis.schema_id)?;
 
         let (sorted_bundles, dag) =
-            self.sort_bundles(bundles, contract_id, build_opouts_dag, &genesis)?;
+            self.sort_bundles(bundles, contract_id, params.build_opouts_dag, &genesis)?;
 
         let bundles =
             Confined::try_from_iter(sorted_bundles).map_err(|_| ConsignError::TooManyBundles)?;
         let terminals = Confined::try_from(
-            bundle_sec_seals
+            terminal_seals
                 .into_iter()
                 .map(|(bundle_id, seals)| {
-                    Confined::try_from(seals)
-                        .map(|confined| (bundle_id, SecretSeals::from(confined)))
+                    Confined::try_from_iter(seals)
+                        .map(|confined| (bundle_id, TerminalSeals::from(confined)))
                         .map_err(|_| ConsignError::InvalidSecretSealsNumber)
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()?,
         )
         .map_err(|_| ConsignError::TooManyTerminals)?;
 
-        let (types, scripts) = self.stash.extract(&schema)?;
-        let scripts = Confined::from_iter_checked(scripts.into_values());
         // TODO: Conceal everything we do not need
 
         let consignment = Consignment {
-            version: ContainerVer::V0,
+            version: ConsignmentVer::V1,
             transfer: TRANSFER,
 
-            schema,
             genesis,
             terminals,
             bundles,
-
-            types,
-            scripts,
         };
 
         Ok((consignment, dag))
     }
 
+    /// See [`Stock::transfer`] for `spv_resolver`.
     pub fn transfer_from_fascia(
         &self,
         contract_id: ContractId,
@@ -960,11 +1091,19 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         fascia: &Fascia,
+        spv_resolver: Option<&dyn ResolveSpvProof>,
     ) -> Result<Consignment<true>, StockError<S, H, P, ConsignError>> {
-        self.consign_from_fascia(contract_id, outputs, secret_seals, opids, fascia, false)
-            .map(|(c, _)| c)
+        self.consign_from_fascia(contract_id, opids, fascia, &ConsignParams {
+            outputs: outputs.as_ref(),
+            secret_seals: secret_seals.as_ref(),
+            witness_id: None,
+            spv_resolver,
+            build_opouts_dag: false,
+        })
+        .map(|(c, _)| c)
     }
 
+    /// See [`Stock::transfer`] for `spv_resolver`.
     pub fn transfer_from_fascia_with_dag(
         &self,
         contract_id: ContractId,
@@ -972,19 +1111,24 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         fascia: &Fascia,
+        spv_resolver: Option<&dyn ResolveSpvProof>,
     ) -> Result<ConsignmentWithDag<true>, StockError<S, H, P, ConsignError>> {
-        self.consign_from_fascia(contract_id, outputs, secret_seals, opids, fascia, true)
-            .map(|(c, d)| (c, d.expect("build_opouts_dag=true")))
+        self.consign_from_fascia(contract_id, opids, fascia, &ConsignParams {
+            outputs: outputs.as_ref(),
+            secret_seals: secret_seals.as_ref(),
+            witness_id: None,
+            spv_resolver,
+            build_opouts_dag: true,
+        })
+        .map(|(c, d)| (c, d.expect("build_opouts_dag=true")))
     }
 
     fn consign_from_fascia(
         &self,
         contract_id: ContractId,
-        outputs: impl AsRef<[OutputSeal]>,
-        secret_seals: impl AsRef<[SecretSeal]>,
         opids: impl IntoIterator<Item = OpId>,
         fascia: &Fascia,
-        build_opouts_dag: bool,
+        params: &ConsignParams,
     ) -> Result<ConsignmentWithOptDag<true>, StockError<S, H, P, ConsignError>> {
         let mut contract_bundle = fascia
             .bundles()
@@ -995,12 +1139,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         let all_bundle_opids = contract_bundle.input_map_opids();
         let bundle_revealed_opids = contract_bundle.known_transitions_opids();
         let opids = opids.into_iter().collect::<HashSet<_>>();
-        let secret_seals = secret_seals
-            .as_ref()
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let outputs = outputs.as_ref().iter().collect::<HashSet<_>>();
+        let secret_seals = params.secret_seals.iter().cloned().collect::<BTreeSet<_>>();
+        let outputs = params.outputs.iter().collect::<HashSet<_>>();
         let witness_id = fascia.witness_id();
         let is_requested_transition = |kt: &KnownTransition| {
             if opids.contains(&kt.opid) {
@@ -1013,8 +1153,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                         .expect("cycling indexes")
                     {
                         Some(s) => {
-                            if outputs.contains(&OutputSeal::with(witness_id, s.vout())) {
-                                return true; // 2. outputs (witness)
+                            if outputs.contains(&s.to_output_seal_or_default(witness_id)) {
+                                return true; // 2. outputs
                             }
                         }
                         None => {
@@ -1053,9 +1193,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         rev_bundle_transitions.reverse();
         contract_bundle.known_transitions = Confined::from_checked(rev_bundle_transitions);
         let SealWitness {
-            public: pub_witness,
+            tx: witness_tx,
             merkle_block,
             dbc_proof,
+            spv_proof: _,
         } = fascia.seal_witness().clone();
         let anchor = Anchor::new(
             merkle_block
@@ -1063,17 +1204,45 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 .map_err(|_| ConsignError::UnrelatedContract(contract_id))?,
             dbc_proof,
         );
-        let bundle_sec_seals = if !secret_seals.is_empty() {
-            bmap! {bundle_id => secret_seals}
+        // Collect terminal seals actually present in the bundle: revealed for witness-vout
+        // beneficiaries, concealed for blinded ones. Only matching seals are included so the
+        // terminal-consistency check in the validator passes.
+        let mut terminal_seals: BTreeSet<BuilderSeal<GraphSeal>> = BTreeSet::new();
+        for kt in &contract_bundle.known_transitions {
+            for typed_assigns in kt.transition.assignments.values() {
+                for index in 0..typed_assigns.len_u16() {
+                    match typed_assigns
+                        .revealed_seal_at(index)
+                        .expect("cycling indexes")
+                    {
+                        Some(seal) => {
+                            if outputs.contains(&seal.to_output_seal_or_default(witness_id)) {
+                                terminal_seals.insert(BuilderSeal::Revealed(seal));
+                            }
+                        }
+                        None => {
+                            let secret = typed_assigns
+                                .confidential_seal_at(index)
+                                .expect("cycling indexes");
+                            if secret_seals.contains(&secret) {
+                                terminal_seals.insert(BuilderSeal::Concealed(secret));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let terminal_seals = if !terminal_seals.is_empty() {
+            bmap! {bundle_id => terminal_seals}
         } else {
             bmap! {}
         };
         self.consign_bundles(
             contract_id,
-            bmap! {bundle_id => (WitnessBundle::with(pub_witness, anchor, contract_bundle), u32::MAX)},
+            bmap! {bundle_id => (WitnessBundle::with(witness_tx, anchor, contract_bundle), u32::MAX)},
             required_opids.into_iter().collect::<Vec<_>>(),
-            bundle_sec_seals,
-            build_opouts_dag,
+            terminal_seals,
+            params,
         )
     }
 
@@ -1106,12 +1275,27 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             })
     }
 
-    pub fn import_kit(&mut self, kit: ValidKit) -> Result<validation::Status, StockError<S, H, P>> {
-        let (kit, status) = kit.split();
+    /// Stores a [`SchemaDefinition`] (a schema together with the strict type
+    /// libraries and AluVM libraries it needs) so contracts using that schema
+    /// can be issued and validated.
+    ///
+    /// The definition is verified before being stored: its type libraries must
+    /// derive exactly the semantic ids the schema commits to, and its AluVM
+    /// libraries must match the ids the schema references. A definition
+    /// imported once stays usable across runs - nothing has to be re-supplied
+    /// from code.
+    ///
+    /// The stash does not keep the definition itself: it stores the schema, the
+    /// type system derived from the definition's type libraries, and the AluVM
+    /// libraries, alongside those of every other imported schema.
+    pub fn import_schema_definition(
+        &mut self,
+        schema_def: SchemaDefinition,
+    ) -> Result<(), StockError<S, H, P>> {
         self.stash.begin_transaction()?;
-        self.stash.consume_kit(kit)?;
+        self.stash.consume_schema_definition(schema_def)?;
         self.stash.commit_transaction()?;
-        Ok(status)
+        Ok(())
     }
 
     pub fn import_contract<R: ResolveWitness>(
@@ -1128,6 +1312,46 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         resolver: R,
     ) -> Result<(), StockError<S, H, P>> {
         self.consume_consignment(contract, resolver)
+    }
+
+    /// Resolve a witness from its SPV proof instead of fetching the TX from an indexer.
+    ///
+    /// Returns [`SpvCheck::Absent`] when there is no proof and [`SpvCheck::Uncheckable`]
+    /// when `resolver` cannot supply block headers, in both cases leaving the caller to
+    /// fall back to [`ResolveWitness::resolve_witness`].
+    ///
+    /// The header is the one at the proof's height in the resolver's best chain, so a
+    /// reorg which moved the witness elsewhere makes the proof fail to verify, reported as
+    /// [`SpvCheck::Refuted`]. Falling back rather than reporting the witness as unresolved
+    /// lets a client with a TX indexer pick up the new position; a client without one
+    /// resolves it as unresolved anyway.
+    ///
+    /// Headers are memoized in `headers`, so that witnesses mined in the same block cost a
+    /// single fetch over the whole pass.
+    fn resolve_witness_spv<R: ResolveWitness>(
+        resolver: &R,
+        tx: &Tx,
+        spv_proof: Option<&SpvProof>,
+        layer1: Layer1,
+        headers: &mut HashMap<NonZeroU32, Header>,
+    ) -> Result<SpvCheck, WitnessResolverError> {
+        let Some(proof) = spv_proof else {
+            return Ok(SpvCheck::Absent);
+        };
+        let header = match headers.entry(proof.block_height) {
+            hash_map::Entry::Occupied(e) => *e.get(),
+            hash_map::Entry::Vacant(e) => match resolver.get_block_header(proof.block_height) {
+                Ok(header) => *e.insert(header),
+                Err(WitnessResolverError::NotSupported) => return Ok(SpvCheck::Uncheckable),
+                Err(e) => return Err(e),
+            },
+        };
+        if proof.validate(tx.compute_txid(), &header).is_err() {
+            return Ok(SpvCheck::Refuted);
+        }
+        let pos = WitnessPos::with(layer1, proof.block_height, header.time as i64)
+            .ok_or(WitnessResolverError::InvalidResolverData)?;
+        Ok(SpvCheck::Confirmed(WitnessStatus::Resolved(tx.clone(), WitnessOrd::Mined(pos))))
     }
 
     /// Consumes a validated consignment.
@@ -1150,25 +1374,54 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .bundled_witnesses()
             .map(|wb| {
                 let bundle = wb.bundle();
-                (
-                    wb.pub_witness.to_witness_id(),
-                    bundle.bundle_id(),
-                    bundle.known_transitions_opids(),
-                )
+                (wb.witness_id(), bundle.bundle_id(), bundle.known_transitions_opids())
             })
             .collect();
 
         // resolve the consignment witnesses with accept-time resolutions,
         // which may differ from the ones seen at validation time if a reorg
-        // happened in the meantime
+        // happened in the meantime. Witnesses carrying a still-valid SPV proof are
+        // resolved from it, so that a client with no access to a TX indexer can
+        // consume the consignment it has just validated.
+        let layer1 = consignment.genesis().chain_net.layer1();
+        let mut headers = HashMap::new();
         let mut statuses: BTreeMap<Txid, WitnessStatus> = bmap![];
-        for (witness_id, _, _) in &consignment_bundles {
-            if !statuses.contains_key(witness_id) {
-                let status = resolver
-                    .resolve_witness(*witness_id)
-                    .map_err(|e| StockError::WitnessUnresolved(*witness_id, e))?;
-                statuses.insert(*witness_id, status);
+        let mut unvetted_proofs: BTreeMap<Txid, SpvProof> = bmap![];
+        for witness_bundle in consignment.bundled_witnesses() {
+            let witness_id = witness_bundle.witness_id();
+            if statuses.contains_key(&witness_id) {
+                continue;
             }
+            let check = Self::resolve_witness_spv(
+                &resolver,
+                &witness_bundle.tx,
+                witness_bundle.spv_proof.as_ref(),
+                layer1,
+                &mut headers,
+            )
+            .map_err(|e| StockError::WitnessUnresolved(witness_id, e))?;
+            // do not store a proof that failed to verify, or that nothing here could
+            // verify. Keep one the stash already holds when the check is `Uncheckable`:
+            // that means headers cannot be fetched, not that the proof is bad. A
+            // refuted proof is dropped even if already stored.
+            if matches!(check, SpvCheck::Refuted | SpvCheck::Uncheckable) {
+                if let Some(proof) = &witness_bundle.spv_proof {
+                    let stashed = self
+                        .stash
+                        .witness(witness_id)
+                        .is_ok_and(|w| w.spv_proof.as_ref() == Some(proof));
+                    if matches!(check, SpvCheck::Refuted) || !stashed {
+                        unvetted_proofs.insert(witness_id, proof.clone());
+                    }
+                }
+            }
+            let status = match check {
+                SpvCheck::Confirmed(status) => status,
+                SpvCheck::Absent | SpvCheck::Uncheckable | SpvCheck::Refuted => resolver
+                    .resolve_witness(witness_id)
+                    .map_err(|e| StockError::WitnessUnresolved(witness_id, e))?,
+            };
+            statuses.insert(witness_id, status);
         }
 
         // witness ords as they will be once the consignment is consumed:
@@ -1249,12 +1502,31 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             statuses,
             fallback: resolver,
         };
+        // The consignment carries only its schema id: the schema itself must
+        // already be in the stash, imported out-of-band via a schema definition.
+        let schema = self.load_imported_schema(consignment.schema_id())?.clone();
         self.store_transaction(move |stash, state, index| {
-            state.update_from_consignment(&consignment, &resolver)?;
+            state.update_from_consignment(&consignment, &schema, &resolver)?;
             index.index_consignment(&consignment)?;
             stash.consume_consignment(consignment)?;
             Ok(())
         })?;
+
+        // A proof the consignment carried for a witness the stash had none for was stored
+        // along with it, so the ones left unvetted above are dropped now. Only when the
+        // stash actually holds the unvetted proof: where it had a proof of its own that one
+        // was kept, and it is not the one which went unvetted. Between this and
+        // `Stash::consume_witness`, the stash is left holding only proofs which either
+        // verified here or verified when they arrived and have not been refuted since.
+        for (witness_id, unvetted) in unvetted_proofs {
+            if self
+                .stash
+                .witness(witness_id)
+                .is_ok_and(|w| w.spv_proof.as_ref() == Some(&unvetted))
+            {
+                self.stash.set_spv_proof(witness_id, None)?;
+            }
+        }
 
         // the consignment was validated and all its bundles have a valid
         // witness: revalidate any of its operations that a reorg had
@@ -1330,20 +1602,36 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .ok_or(ConsignError::Concealed(bundle_id, opid).into())
     }
 
+    /// Builds the [`WitnessBundle`] for `bundle_id`, revealing only `opid`.
+    ///
+    /// The bundle contract and its valid witness are provided by the caller,
+    /// which has already resolved them.
+    ///
+    /// If the witness is mined, an SPV proof is attached: the one from the stash, or
+    /// failing that one retrieved from `spv_resolver`. This is best-effort: a witness
+    /// whose proof cannot be retrieved is left without one.
+    ///
+    /// A proof coming from the stash wins over the resolver and is shipped as is, without
+    /// being checked against the chain. Reconciling the stash with a reorg is the job of
+    /// [`Stock::update_witnesses`], which drops the proofs a reorg invalidated; even in
+    /// the window before it notices one, the worst a stale proof costs the receiver is
+    /// resolving the witness TX, which is what it would do anyway had no proof been
+    /// attached.
     fn witness_bundle(
         &self,
         bundle_id: BundleId,
         opid: OpId,
+        contract_id: ContractId,
+        (witness_id, witness_ord): (Txid, WitnessOrd),
+        spv_resolver: Option<&dyn ResolveSpvProof>,
     ) -> Result<(WitnessBundle, u32), StockError<S, H, P, ConsignError>> {
-        let (witness_ids, contract_id) = self.index.bundle_info(bundle_id)?;
         let bundle = self
             .stash
             .bundle(bundle_id)?
             .to_concealed_except(opid)
             .map_err(|e| StockError::from(ConsignError::Transition(e)))?;
-        let (witness_id, witness_ord) = self.state.select_valid_witness(witness_ids)?;
         let witness = self.stash.witness(witness_id)?;
-        let pub_witness = witness.public.clone();
+        let tx = witness.tx.clone();
         let Ok(mpc_proof) = witness.merkle_block.to_merkle_proof(contract_id.into()) else {
             return Err(StashInconsistency::WitnessMissesContract(
                 witness_id,
@@ -1355,6 +1643,14 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         };
         let anchor = Anchor::new(mpc_proof, witness.dbc_proof.clone());
 
+        let spv_proof = witness.spv_proof.clone().or_else(|| {
+            // a non-mined witness has no proof to retrieve. This is what leaves the
+            // witness of the transfer being composed without one, as it is not
+            // broadcast yet.
+            let resolver = spv_resolver.filter(|_| matches!(witness_ord, WitnessOrd::Mined(_)))?;
+            resolver.resolve_spv_proof(witness_id).ok()
+        });
+
         let height = match witness_ord {
             WitnessOrd::Mined(pos) => pos.height().into(),
             WitnessOrd::Tentative => u32::MAX - 1,
@@ -1362,7 +1658,15 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             WitnessOrd::Archived => unreachable!("select_valid_witness prevents this"),
         };
 
-        Ok((WitnessBundle::with(pub_witness, anchor, bundle), height))
+        Ok((
+            WitnessBundle {
+                tx,
+                anchor,
+                bundle,
+                spv_proof,
+            },
+            height,
+        ))
     }
 
     pub fn store_secret_seal(&mut self, seal: GraphSeal) -> Result<bool, StockError<S, H, P>> {
@@ -1495,35 +1799,55 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         resolver: impl ResolveWitness,
         id: &Txid,
         ord: &mut WitnessOrd,
-        became_invalid_witnesses: &mut BTreeMap<Txid, BTreeSet<BundleId>>,
-        became_valid_witnesses: &mut BTreeMap<Txid, BTreeSet<BundleId>>,
-    ) -> Result<(), StockError<S, H, P>> {
-        let new = resolver
-            .resolve_witness(*id)
-            .map_err(|e| StockError::WitnessUnresolved(*id, e))?
-            .witness_ord();
+        layer1: Layer1,
+        headers: &mut HashMap<NonZeroU32, Header>,
+    ) -> Result<WitnessOrdChange, StockError<S, H, P>> {
+        // a witness with a stored SPV proof is refreshed from it, so that a client
+        // with no access to a TX indexer can still detect a reorg affecting it
+        let spv_check = match self.stash.witness(*id) {
+            Ok(witness) => Self::resolve_witness_spv(
+                &resolver,
+                &witness.tx,
+                witness.spv_proof.as_ref(),
+                layer1,
+                headers,
+            )
+            .map_err(|e| StockError::WitnessUnresolved(*id, e))?,
+            Err(_) => SpvCheck::Absent,
+        };
+        if matches!(spv_check, SpvCheck::Refuted) {
+            self.stash.set_spv_proof(*id, None)?;
+        }
+        let new = match spv_check {
+            SpvCheck::Confirmed(status) => status,
+            SpvCheck::Absent | SpvCheck::Uncheckable | SpvCheck::Refuted => resolver
+                .resolve_witness(*id)
+                .map_err(|e| StockError::WitnessUnresolved(*id, e))?,
+        }
+        .witness_ord();
         let changed = *ord != new;
+        let mut change = WitnessOrdChange::Kept;
         if changed {
             let bundle_valid = match (*ord, new) {
                 (WitnessOrd::Archived, _) => Some(true),
                 (_, WitnessOrd::Archived) => Some(false),
                 _ => None,
             };
-            // save witnesses that became valid or invalid
+            // report witnesses that became valid or invalid
             if let Some(valid) = bundle_valid {
                 let seal_witness = self.stash.witness(*id)?;
                 let bundle_ids: BTreeSet<_> = seal_witness.known_bundle_ids().collect();
-                if valid {
-                    became_valid_witnesses.insert(*id, bundle_ids);
+                change = if valid {
+                    WitnessOrdChange::BecameValid(bundle_ids)
                 } else {
-                    became_invalid_witnesses.insert(*id, bundle_ids);
-                }
+                    WitnessOrdChange::BecameInvalid(bundle_ids)
+                };
             }
             // save the changed witness ord
             self.state.upsert_witness(*id, new)?;
             *ord = new
         }
-        Ok(())
+        Ok(change)
     }
 
     pub fn update_witnesses(
@@ -1533,6 +1857,14 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         force_witnesses: Vec<Txid>,
     ) -> Result<UpdateRes, StockError<S, H, P>> {
         let after_height = NonZeroU32::new(after_height).unwrap_or(NonZeroU32::MIN);
+        // needed to turn an SPV proof's height into a `WitnessPos`; all the contracts of a
+        // stock live on the same chain, so any genesis answers for all of them
+        let layer1 = self
+            .stash
+            .geneses()?
+            .next()
+            .map(|genesis| genesis.chain_net.layer1())
+            .unwrap_or(Layer1::Bitcoin);
         let mut succeeded = 0;
         let mut failed = map![];
         self.state.begin_transaction()?;
@@ -1540,6 +1872,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         let mut witnesses = witnesses.release();
         let mut became_invalid_witnesses = bmap!();
         let mut became_valid_witnesses = bmap!();
+        let mut headers = HashMap::new();
         // 1. update witness ord of all witnesses
         for (id, ord) in &mut witnesses {
             if matches!(ord, WitnessOrd::Ignored) && !force_witnesses.contains(id) {
@@ -1548,14 +1881,17 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             if matches!(ord, WitnessOrd::Mined(pos) if pos.height() < after_height) {
                 continue;
             }
-            match self.update_witness_ord(
-                &resolver,
-                id,
-                ord,
-                &mut became_invalid_witnesses,
-                &mut became_valid_witnesses,
-            ) {
-                Ok(()) => {
+            match self.update_witness_ord(&resolver, id, ord, layer1, &mut headers) {
+                Ok(change) => {
+                    match change {
+                        WitnessOrdChange::BecameValid(bundle_ids) => {
+                            became_valid_witnesses.insert(*id, bundle_ids);
+                        }
+                        WitnessOrdChange::BecameInvalid(bundle_ids) => {
+                            became_invalid_witnesses.insert(*id, bundle_ids);
+                        }
+                        WitnessOrdChange::Kept => {}
+                    }
                     succeeded += 1;
                 }
                 Err(err) => {
@@ -1613,6 +1949,19 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         self.state.commit_transaction()?;
         Ok(UpdateRes { succeeded, failed })
+    }
+
+    /// Attach an SPV proof to an already-known witness TX.
+    ///
+    /// Consignments produced afterwards carry the proof, letting the receiver verify that
+    /// the witness is mined from a block header alone, without asking an indexer for the
+    /// TX. Returns whether anything changed.
+    pub fn store_spv_proof(
+        &mut self,
+        witness_id: Txid,
+        proof: SpvProof,
+    ) -> Result<bool, StockError<S, H, P>> {
+        Ok(self.stash.set_spv_proof(witness_id, Some(proof))?)
     }
 
     pub fn upsert_witness(
@@ -1730,12 +2079,28 @@ pub struct UpdateRes {
 
 #[cfg(test)]
 mod test {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use amplify::confinement::{NonEmptyOrdMap, NonEmptyOrdSet, NonEmptyVec};
+    use amplify::ByteArray;
     use baid64::FromBaid64Str;
-    use rgb::commit_verify::{Conceal, DigestExt, Sha256};
-    use rgb::Vout;
+    use rgb::assignments::AssignVec;
+    use rgb::bitcoin::hashes::Hash;
+    use rgb::bitcoin::{absolute, transaction};
+    use rgb::commit_verify::mpc::{self, MerkleBlock, MerkleTree, MultiSource};
+    use rgb::commit_verify::{Conceal, DigestExt, Sha256, TryCommitVerify};
+    use rgb::txout::BlindSeal;
+    use rgb::validation::DbcProof;
+    use rgb::vm::WitnessOrd;
+    use rgb::{
+        AssignRights, AssignmentType, Assignments, Inputs, TransitionBundle, TypedAssigns,
+        VoidState, Vout,
+    };
+    use strict_encoding::StrictDumb;
 
     use super::*;
-    use crate::containers::ConsignmentExt;
+    use crate::persistence::{IndexWriteProvider, StashWriteProvider};
 
     #[test]
     fn test_consign() {
@@ -1747,9 +2112,13 @@ mod test {
         let contract_id =
             ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                 .unwrap();
-        if let Ok(transfer) =
-            stock.consign::<true>(contract_id, [], vec![secret_seal], [], None, false)
-        {
+        if let Ok(transfer) = stock.consign::<true>(contract_id, [], &ConsignParams {
+            outputs: &[],
+            secret_seals: &[secret_seal],
+            witness_id: None,
+            spv_resolver: None,
+            build_opouts_dag: false,
+        }) {
             println!("{transfer:?}")
         }
     }
@@ -1766,12 +2135,12 @@ mod test {
     }
 
     #[test]
-    fn test_export_schema() {
+    fn test_schema_rules() {
         let stock = Stock::in_memory();
         let hasher = Sha256::default();
         let schema_id = SchemaId::from(hasher);
-        if let Ok(schema) = stock.export_schema(schema_id) {
-            println!("{:?}", schema.kit_id())
+        if let Ok(rules) = stock.schema_rules(schema_id) {
+            println!("{:?}", rules.schema_id())
         }
     }
 
@@ -1796,14 +2165,6 @@ mod test {
     /// here as a watchdog timeout.
     #[test]
     fn maybe_update_ops_as_valid_diamond_chain() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        use amplify::confinement::{NonEmptyOrdMap, NonEmptyOrdSet, NonEmptyVec};
-        use rgb::bitcoin::hashes::Hash;
-        use rgb::{Inputs, TransitionBundle};
-        use strict_encoding::StrictDumb;
-
         const DIAMONDS: usize = 64;
 
         let (tx, rx) = mpsc::channel();
@@ -1889,6 +2250,278 @@ mod test {
             }
             // the worker thread panicked: propagate its panic
             Err(mpsc::RecvTimeoutError::Disconnected) => handle.join().unwrap(),
+        }
+    }
+
+    //////////////////////////////////////////////////////////////
+    // Stock::consign tests
+    //////////////////////////////////////////////////////////////
+
+    /// An empty transaction, made unique by `nonce`
+    fn tx(nonce: u8) -> Tx {
+        Tx {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::from_consensus(nonce as u32),
+            input: vec![],
+            output: vec![],
+        }
+    }
+
+    /// The id of the transaction identified by `nonce`
+    fn txid(nonce: u8) -> Txid { tx(nonce).compute_txid() }
+
+    /// Seeds a dumb schema and its genesis, so that the consignment can be assembled.
+    fn seed_contract(stock: &mut Stock) -> ContractId {
+        let schema = Schema::strict_dumb();
+        let mut genesis = Genesis::strict_dumb();
+        genesis.schema_id = schema.schema_id();
+        let contract_id = genesis.contract_id();
+        let provider = stock.stash.as_provider_mut();
+        provider.replace_schema(schema).unwrap();
+        provider.replace_genesis(genesis).unwrap();
+        stock
+            .index
+            .as_provider_mut()
+            .register_contract(contract_id)
+            .unwrap();
+        contract_id
+    }
+
+    /// An MPC block committing `bundle_id` under `contract_id`
+    fn mpc_block(contract_id: ContractId, bundle_id: BundleId) -> MerkleBlock {
+        MerkleBlock::from(
+            MerkleTree::try_commit(&MultiSource {
+                min_depth: amplify::num::u5::ZERO,
+                messages: Confined::from_checked(bmap! {
+                    mpc::ProtocolId::from_byte_array(contract_id.to_byte_array()) =>
+                        mpc::Message::from_byte_array(bundle_id.to_byte_array())
+                }),
+                static_entropy: None,
+            })
+            .unwrap(),
+        )
+    }
+
+    /// A bundle holding a single transition which spends genesis' `input_no` and
+    /// assigns state to each of `seals`
+    fn seal_bundle(
+        contract_id: ContractId,
+        seals: &[GraphSeal],
+        input_no: u16,
+    ) -> TransitionBundle {
+        let ty = AssignmentType::strict_dumb();
+        let mut transition = Transition::strict_dumb();
+        transition.inputs = Inputs::from(NonEmptyOrdSet::with(Opout::new(
+            OpId::from_byte_array(contract_id.to_byte_array()),
+            ty,
+            input_no,
+        )));
+        transition.assignments = Assignments::from(Confined::from_checked(bmap! {
+            ty => TypedAssigns::Declarative(AssignVec::with(NonEmptyVec::from_checked(
+                seals
+                    .iter()
+                    .map(|seal| AssignRights::revealed(*seal, VoidState::default()))
+                    .collect(),
+            )))
+        }));
+        let opid = transition.id();
+        TransitionBundle {
+            input_map: NonEmptyOrdMap::from_checked(
+                transition.inputs.iter().map(|i| (*i, opid)).collect(),
+            ),
+            known_transitions: NonEmptyVec::with(KnownTransition::new(opid, transition)),
+        }
+    }
+
+    /// A witness anchoring bundle_id, closed by the transaction identified by `nonce`
+    fn seal_witness(contract_id: ContractId, bundle_id: BundleId, nonce: u8) -> SealWitness {
+        SealWitness::new(
+            tx(nonce),
+            mpc_block(contract_id, bundle_id),
+            DbcProof::strict_dumb(),
+            None,
+        )
+    }
+
+    /// Persists `bundle` as anchored to the transaction identified by `nonce`
+    fn seed_witness_bundle(
+        stock: &mut Stock,
+        contract_id: ContractId,
+        nonce: u8,
+        bundle: TransitionBundle,
+    ) -> BundleId {
+        let witness_id = txid(nonce);
+        let bundle_id = bundle.bundle_id();
+        stock
+            .stash
+            .consume_witness(&seal_witness(contract_id, bundle_id, nonce))
+            .unwrap();
+        stock
+            .state
+            .upsert_witness(witness_id, WitnessOrd::Tentative)
+            .unwrap();
+        stock.stash.consume_bundle(bundle.clone()).unwrap();
+        stock
+            .index
+            .index_bundle(contract_id, &bundle, witness_id)
+            .unwrap();
+        bundle_id
+    }
+
+    /// Test cases for construction of consignment terminals. Returns:
+    /// - Vec of seals to include in stock
+    /// - Vec of OutputSeal to input to the consign method
+    /// - Vec of expected seals to be included as terminals
+    ///
+    /// 4 cases are covered
+    /// - regular "pay to witness", requested as terminal
+    /// - change output in "pay to witness", not requested as terminal
+    /// - revealed "pay to utxo" with the same vout as one of the above, not requested as terminal
+    /// - revealed "pay to utxo", requested as terminal
+    fn terminal_seal_cases(witness_id: Txid) -> (Vec<GraphSeal>, Vec<OutputSeal>, Vec<GraphSeal>) {
+        let requested_vout = 1u32;
+        let other_txid = txid(0xBB);
+        let utxo_txid = txid(0xCC);
+
+        let witness_beneficiary = GraphSeal::new_random_vout(requested_vout);
+        let witness_change = GraphSeal::new_random_vout(2u32);
+        let colliding_change: GraphSeal =
+            BlindSeal::new_random(other_txid, requested_vout).transmutate();
+        let utxo_beneficiary: GraphSeal = BlindSeal::new_random(utxo_txid, 0u32).transmutate();
+
+        // an unrequested seal comes first on purpose: whoever scans the assignments has to keep
+        // going past it rather than concluding from the first one alone
+        let seals = vec![witness_change, witness_beneficiary, colliding_change, utxo_beneficiary];
+        let outputs =
+            vec![OutputSeal::with(witness_id, requested_vout), OutputSeal::with(utxo_txid, 0u32)];
+        let expected = vec![witness_beneficiary, utxo_beneficiary];
+        (seals, outputs, expected)
+    }
+
+    /// Apply terminal_seal_cases to stock.transfer
+    #[test]
+    fn terminal_seals_from_stored_bundle() {
+        let mut stock = Stock::in_memory();
+        let contract_id = seed_contract(&mut stock);
+
+        let witness_nonce = 0xAA;
+        let witness_id = txid(witness_nonce);
+        let (seals, outputs, expected) = terminal_seal_cases(witness_id);
+        let bundle_id = seed_witness_bundle(
+            &mut stock,
+            contract_id,
+            witness_nonce,
+            seal_bundle(contract_id, &seals, 0),
+        );
+
+        let consignment = stock
+            .transfer(contract_id, outputs, [], [], Some(witness_id), None)
+            .expect("consignment should be built");
+
+        assert_eq!(consignment.terminals.len(), 1);
+        let terminals = consignment
+            .terminals
+            .get(&bundle_id)
+            .expect("the bundle must be a terminal")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            terminals,
+            expected
+                .into_iter()
+                .map(BuilderSeal::Revealed)
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// Apply terminal_seal_cases to stock.transfer_from_fascia
+    #[test]
+    fn terminal_seals_from_fascia() {
+        let mut stock = Stock::in_memory();
+        let contract_id = seed_contract(&mut stock);
+
+        let witness_nonce = 0xAA;
+        let (seals, outputs, expected) = terminal_seal_cases(txid(witness_nonce));
+        let bundle = seal_bundle(contract_id, &seals, 0);
+        let bundle_id = bundle.bundle_id();
+        let fascia = Fascia::new(
+            seal_witness(contract_id, bundle_id, witness_nonce),
+            NonEmptyOrdMap::with_key_value(contract_id, bundle),
+        );
+
+        let consignment = stock
+            .transfer_from_fascia(contract_id, outputs, [], [], &fascia, None)
+            .expect("consignment should be built");
+
+        assert_eq!(consignment.terminals.len(), 1);
+        let terminals = consignment
+            .terminals
+            .get(&bundle_id)
+            .expect("the bundle must be a terminal")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            terminals,
+            expected
+                .into_iter()
+                .map(BuilderSeal::Revealed)
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// Test terminal collection in stock.consign_operations
+    ///
+    /// Each of the three bundles is closed by a different witness TX and all three seals are
+    /// requested as outputs, so every seal may only be resolved against the witness of the
+    /// bundle holding it: the first two are witness-vout seals sharing a vout on
+    /// distinct witnesses, the third sits on a pre-existing UTXO (`TxPtr::Txid`)
+    #[test]
+    fn terminal_seals_across_multiple_witnesses() {
+        let mut stock = Stock::in_memory();
+        let contract_id = seed_contract(&mut stock);
+        let vout = 1u32;
+
+        // two witness beneficiaries sharing a vout, each closed by a different witness TX
+        let (witness_1, witness_2) = (0xAA, 0xBB);
+        let seal_1 = GraphSeal::new_random_vout(vout);
+        let seal_2 = GraphSeal::new_random_vout(vout);
+        // and an allocation received on a pre-existing UTXO: explicit txid, not
+        // TxPtr::WitnessTx
+        let witness_3 = 0xCC;
+        let utxo_txid = txid(0xDD);
+        let seal_3: GraphSeal = BlindSeal::new_random(utxo_txid, 0u32).transmutate();
+
+        let bundle_1 = seal_bundle(contract_id, &[seal_1], 0);
+        let bundle_2 = seal_bundle(contract_id, &[seal_2], 1);
+        let bundle_3 = seal_bundle(contract_id, &[seal_3], 2);
+        let bundle_1 = seed_witness_bundle(&mut stock, contract_id, witness_1, bundle_1);
+        let bundle_2 = seed_witness_bundle(&mut stock, contract_id, witness_2, bundle_2);
+        let bundle_3 = seed_witness_bundle(&mut stock, contract_id, witness_3, bundle_3);
+
+        let consignment = stock
+            .transfer(
+                contract_id,
+                [
+                    OutputSeal::with(txid(witness_1), vout),
+                    OutputSeal::with(txid(witness_2), vout),
+                    OutputSeal::with(utxo_txid, 0u32),
+                ],
+                [],
+                [],
+                None,
+                None,
+            )
+            .expect("consignment should be built");
+
+        assert_eq!(consignment.terminals.len(), 3);
+        for (bundle_id, seal) in [(bundle_1, seal_1), (bundle_2, seal_2), (bundle_3, seal_3)] {
+            let terminals = consignment
+                .terminals
+                .get(&bundle_id)
+                .expect("bundle must be a terminal")
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            assert_eq!(terminals, bset![BuilderSeal::Revealed(seal)]);
         }
     }
 }

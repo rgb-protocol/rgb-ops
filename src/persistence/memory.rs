@@ -40,10 +40,10 @@ use rgb::vm::{
     UnknownGlobalStateType, WitnessOrd,
 };
 use rgb::{
-    Assign, AssignmentType, Assignments, AssignmentsRef, BundleId, ContractId, ExposedSeal,
-    ExposedState, FungibleState, Genesis, GenesisSeal, GlobalStateType, GraphSeal, OpId, Operation,
-    Opout, OutputSeal, RevealedData, RevealedValue, Schema, SchemaId, SecretSeal, Transition,
-    TransitionBundle, TypedAssigns, VoidState,
+    Assign, AssignmentType, Assignments, AssignmentsRef, BuilderSeal, BundleId, ContractId,
+    ExposedSeal, ExposedState, FungibleState, Genesis, GenesisSeal, GlobalStateType, GraphSeal,
+    OpId, Operation, Opout, OutputSeal, RevealedData, RevealedValue, Schema, SchemaId, SecretSeal,
+    Transition, TransitionBundle, TypedAssigns, VoidState,
 };
 use strict_encoding::{DefaultBasedStrictDumb, StrictDeserialize, StrictSerialize};
 use strict_types::TypeSystem;
@@ -1219,7 +1219,7 @@ impl IndexWriteProvider for MemIndex {
 
         for (no, assign) in vec.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::Revealed { seal, .. } = assign {
+            if let Some(seal) = assign.revealed_seal() {
                 let output = seal
                     .to_output_seal()
                     .expect("genesis seals always have outpoint");
@@ -1253,7 +1253,7 @@ impl IndexWriteProvider for MemIndex {
 
         for (no, assign) in vec.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::Revealed { seal, .. } = assign {
+            if let Some(seal) = assign.revealed_seal() {
                 let output = seal.to_output_seal_or_default(witness_id);
                 match index.outpoint_opouts.get_mut(&output) {
                     Some(opouts) => {
@@ -1280,8 +1280,8 @@ impl MemIndex {
     ) -> Result<(), IndexWriteError<MemError>> {
         for (no, assign) in vec.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::ConfidentialSeal { seal, .. } = assign {
-                self.add_terminal(*seal, opout)?;
+            if let BuilderSeal::Concealed(seal) = assign.seal {
+                self.add_terminal(seal, opout)?;
             }
         }
         Ok(())

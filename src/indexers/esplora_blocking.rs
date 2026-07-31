@@ -21,13 +21,18 @@
 
 use std::num::NonZeroU32;
 
+use amplify::confinement::Confined;
 pub use esplora_client;
 use esplora_client::BlockingClient;
+use rgb::bitcoin::block::Header;
 use rgb::bitcoin::constants::ChainHash;
-use rgb::bitcoin::Txid;
-use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
+use rgb::bitcoin::hashes::Hash as _;
+use rgb::bitcoin::{TxMerkleNode, Txid};
+use rgbcore::validation::{ResolveWitness, SpvProof, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::{WitnessOrd, WitnessPos};
 use rgbcore::ChainNet;
+
+use crate::indexers::ResolveSpvProof;
 
 /// Wrapper of an esplora client, necessary to implement the foreign `ResolveWitness` trait.
 pub struct EsploraClient {
@@ -68,6 +73,47 @@ impl ResolveWitness for EsploraClient {
             None => WitnessOrd::Tentative,
         };
         Ok(WitnessStatus::Resolved(tx, ord))
+    }
+
+    fn get_block_header(&self, height: NonZeroU32) -> Result<Header, WitnessResolverError> {
+        // esplora has no height-keyed header endpoint, so the height is first resolved to
+        // the hash of the block occupying it in the best chain
+        let block_hash = self
+            .inner
+            .get_block_hash(height.get())
+            .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?;
+        self.inner
+            .get_header_by_hash(&block_hash)
+            .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))
+    }
+}
+
+impl ResolveSpvProof for EsploraClient {
+    fn resolve_spv_proof(&self, txid: Txid) -> Result<SpvProof, WitnessResolverError> {
+        let proof = self
+            .inner
+            .get_merkle_proof(&txid)
+            .map_err(|e| WitnessResolverError::ResolverIssue(Some(txid), e.to_string()))?
+            .ok_or_else(|| {
+                WitnessResolverError::ResolverIssue(Some(txid), s!("TX is unknown or not mined"))
+            })?;
+        let block_height =
+            NonZeroU32::new(proof.block_height).ok_or(WitnessResolverError::InvalidResolverData)?;
+        let pos =
+            u32::try_from(proof.pos).map_err(|_| WitnessResolverError::InvalidResolverData)?;
+        // esplora returns merkle path elements as txids, hence already in internal byte order
+        let merkle = proof
+            .merkle
+            .into_iter()
+            .map(|node| TxMerkleNode::from_byte_array(node.to_byte_array()))
+            .collect::<Vec<_>>();
+        let merkle =
+            Confined::try_from(merkle).map_err(|_| WitnessResolverError::InvalidResolverData)?;
+        Ok(SpvProof {
+            block_height,
+            pos,
+            merkle,
+        })
     }
 }
 

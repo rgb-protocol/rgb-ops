@@ -31,7 +31,7 @@ use rgb::{
     KnownTransition, OpId, Operation, Opout, TransitionBundle, TypedAssigns,
 };
 
-use crate::containers::{ConsignmentExt, ToWitnessId, WitnessBundle};
+use crate::containers::ConsignmentExt;
 use crate::persistence::{MemError, StoreTransaction};
 use crate::SecretSeal;
 
@@ -166,14 +166,8 @@ impl<P: IndexProvider> Index<P> {
             .register_contract(contract_id)
             .map_err(IndexError::WriteProvider)?;
         self.index_genesis(contract_id, consignment.genesis())?;
-        for WitnessBundle {
-            pub_witness,
-            anchor: _,
-            bundle,
-        } in consignment.bundled_witnesses()
-        {
-            let witness_id = pub_witness.to_witness_id();
-            self.index_bundle(contract_id, bundle, witness_id)?;
+        for witness_bundle in consignment.bundled_witnesses() {
+            self.index_bundle(contract_id, &witness_bundle.bundle, witness_bundle.witness_id())?;
         }
 
         Ok(())

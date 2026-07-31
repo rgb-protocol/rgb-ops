@@ -26,7 +26,6 @@ extern crate core;
 extern crate amplify;
 #[macro_use]
 extern crate strict_encoding;
-#[macro_use]
 extern crate rgbcore as rgb;
 #[cfg(feature = "serde")]
 #[macro_use]

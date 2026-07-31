@@ -29,25 +29,26 @@ mod consignment;
 mod util;
 mod partials;
 mod file;
-mod kit;
+#[cfg(feature = "legacy")]
+pub mod legacy;
 
-pub use anchors::{PubWitness, SealWitness, SealWitnessMergeError, ToWitnessId, WitnessBundle};
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
+pub use anchors::{SealWitness, SealWitnessMergeError, SpvProof, WitnessBundle};
 pub use consignment::{
     Consignment, ConsignmentConstraintError, ConsignmentExt, ConsignmentId, ConsignmentParseError,
     Contract, Transfer, UncheckedConsignment, UncheckedContract, UncheckedTransfer,
     ValidConsignment, ValidContract, ValidTransfer,
 };
 pub use file::{FileContent, LoadError, UniversalFile};
-pub use kit::{Kit, KitId, ValidKit};
 pub use partials::{Batch, Fascia};
-pub use seal::{BuilderSeal, VoutSeal};
-pub use util::{ContainerVer, SecretSeals};
+pub use rgb::BuilderSeal;
+pub use seal::VoutSeal;
+pub use util::{ConsignmentVer, TerminalSeals};
 
-pub const ASCII_ARMOR_NAME: &str = "Name";
 pub const ASCII_ARMOR_SCHEMA: &str = "Schema";
 pub const ASCII_ARMOR_CONTRACT: &str = "Contract";
 pub const ASCII_ARMOR_VERSION: &str = "Version";
 pub const ASCII_ARMOR_TERMINAL: &str = "Terminal";
-pub const ASCII_ARMOR_SCRIPT: &str = "Alu-Lib";
-pub const ASCII_ARMOR_TYPE_SYSTEM: &str = "Type-System";
 pub const ASCII_ARMOR_CONSIGNMENT_TYPE: &str = "Type";

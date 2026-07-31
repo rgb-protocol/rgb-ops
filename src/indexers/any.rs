@@ -22,13 +22,16 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
+use rgb::bitcoin::block::Header;
 use rgb::bitcoin::{Transaction as Tx, Txid};
-use rgbcore::validation::{ResolveWitness, WitnessResolverError, WitnessStatus};
+use rgbcore::validation::{ResolveWitness, SpvProof, WitnessResolverError, WitnessStatus};
 use rgbcore::vm::WitnessOrd;
 use rgbcore::ChainNet;
 
 use crate::containers::Consignment;
+use crate::indexers::{Indexer, ResolveSpvProof};
 
 /// Generic struct wrapping any implementation of the [`ResolveWitness`] trait.
 /// It also contains a map of the [`Consignment`] TXs, non-empty if `add_consignment_txes` has been
@@ -36,7 +39,7 @@ use crate::containers::Consignment;
 #[derive(From)]
 #[non_exhaustive]
 pub struct AnyResolver {
-    inner: Box<dyn ResolveWitness + Send>,
+    inner: Box<dyn Indexer + Send>,
     consignment_txes: HashMap<Txid, Tx>,
 }
 
@@ -67,6 +70,25 @@ impl AnyResolver {
         })
     }
 
+    /// Return an [`AnyResolver`] wrapping a
+    /// [`super::bitcoind_blocking::BitcoindClient`].
+    ///
+    /// The node must run with `-txindex`, see
+    /// [`super::bitcoind_blocking::BitcoindClient`].
+    #[cfg(feature = "bitcoind_blocking")]
+    pub fn bitcoind_blocking(
+        url: &str,
+        auth: super::bitcoind_blocking::bitcoincore_rpc::Auth,
+    ) -> Result<Self, String> {
+        Ok(AnyResolver {
+            inner: Box::new(super::bitcoind_blocking::BitcoindClient::new(
+                super::bitcoind_blocking::bitcoincore_rpc::Client::new(url, auth)
+                    .map_err(|e| e.to_string())?,
+            )),
+            consignment_txes: Default::default(),
+        })
+    }
+
     /// Return an [`AnyResolver`] wrapping a [`super::mempool_blocking::MemPoolClient`].
     #[cfg(feature = "mempool_blocking")]
     pub fn mempool_blocking(
@@ -88,8 +110,7 @@ impl AnyResolver {
             consignment
                 .bundles
                 .iter()
-                .filter_map(|bw| bw.pub_witness.tx().cloned())
-                .map(|tx| (tx.compute_txid(), tx)),
+                .map(|bw| (bw.witness_id(), bw.tx.clone())),
         );
     }
 }
@@ -103,7 +124,17 @@ impl ResolveWitness for AnyResolver {
         }
     }
 
+    fn get_block_header(&self, height: NonZeroU32) -> Result<Header, WitnessResolverError> {
+        self.inner.get_block_header(height)
+    }
+
     fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), WitnessResolverError> {
         self.inner.check_chain_net(chain_net)
+    }
+}
+
+impl ResolveSpvProof for AnyResolver {
+    fn resolve_spv_proof(&self, txid: Txid) -> Result<SpvProof, WitnessResolverError> {
+        self.inner.resolve_spv_proof(txid)
     }
 }

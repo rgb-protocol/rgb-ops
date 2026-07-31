@@ -29,11 +29,12 @@ use rgb::{
     Schema, Txid, VoidState,
 };
 use strict_encoding::{FieldName, StrictDecode, StrictDumb, StrictEncode};
-use strict_types::{StrictVal, TypeSystem};
+use strict_types::StrictVal;
 
 use crate::contract::{AssignmentsFilter, KnownState, OutputAssignment, WitnessInfo};
 use crate::info::ContractInfo;
 use crate::persistence::ContractStateRead;
+use crate::validation::SchemaRules;
 use crate::LIB_NAME_RGB_OPS;
 
 #[derive(Clone, Eq, PartialEq, Debug, Display, Error, From)]
@@ -225,19 +226,24 @@ impl ContractOp {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct ContractData<S: ContractStateRead> {
     pub state: S,
-    pub schema: Schema,
-    pub types: TypeSystem,
+    /// The rules the contract was issued under: schema, type system and
+    /// scripts.
+    pub rules: SchemaRules,
     pub info: ContractInfo,
 }
 
 impl<S: ContractStateRead> ContractData<S> {
     pub fn contract_id(&self) -> ContractId { self.state.contract_id() }
 
+    /// The schema the contract was issued under.
+    #[inline]
+    pub fn schema(&self) -> &Schema { self.rules.schema() }
+
     /// # Panics
     ///
     /// If data is corrupted.
     pub fn global(&self, name: impl Into<FieldName>) -> impl Iterator<Item = StrictVal> + '_ {
-        self.global_raw(self.schema.global_type(name))
+        self.global_raw(self.schema().global_type(name))
     }
 
     /// # Panics
@@ -245,7 +251,8 @@ impl<S: ContractStateRead> ContractData<S> {
     /// If data is corrupted.
     pub fn global_raw(&self, type_id: GlobalStateType) -> impl Iterator<Item = StrictVal> + '_ {
         let global_details = self
-            .schema
+            .rules
+            .schema()
             .global_types
             .get(&type_id)
             .expect("cannot find type ID in schema global types");
@@ -253,7 +260,8 @@ impl<S: ContractStateRead> ContractData<S> {
             .global(type_id)
             .expect("cannot find type ID in global state")
             .map(|entry| {
-                self.types
+                self.rules
+                    .types()
                     .strict_deserialize_type(
                         global_details.global_state_schema.sem_id,
                         entry.borrow().data().as_slice(),
@@ -299,7 +307,7 @@ impl<S: ContractStateRead> ContractData<S> {
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
     ) -> Result<impl Iterator<Item = RightsAllocation> + 'c, ContractError> {
-        let type_id = self.schema.assignment_type(name);
+        let type_id = self.schema().assignment_type(name);
         self.rights_raw(type_id, filter)
     }
 
@@ -316,7 +324,7 @@ impl<S: ContractStateRead> ContractData<S> {
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
     ) -> Result<impl Iterator<Item = FungibleAllocation> + 'c, ContractError> {
-        let type_id = self.schema.assignment_type(name);
+        let type_id = self.schema().assignment_type(name);
         self.fungible_raw(type_id, filter)
     }
 
@@ -333,7 +341,7 @@ impl<S: ContractStateRead> ContractData<S> {
         name: impl Into<FieldName>,
         filter: impl AssignmentsFilter + 'c,
     ) -> Result<impl Iterator<Item = DataAllocation> + 'c, ContractError> {
-        let type_id = self.schema.assignment_type(name);
+        let type_id = self.schema().assignment_type(name);
         self.data_raw(type_id, filter)
     }
 
