@@ -119,7 +119,7 @@ pub(crate) fn global_ord(out: &GlobalOut, witness_ord: Option<WitnessOrd>) -> Op
             if ord == WitnessOrd::Archived {
                 return None;
             }
-            Some(GlobalOrd::transition(out.opid, out.index, ty, out.nonce, ord))
+            Some(GlobalOrd::transition(out.opid, out.index, ty, out.nonce))
         }
     }
 }
@@ -132,14 +132,6 @@ pub(crate) fn global_ord(out: &GlobalOut, witness_ord: Option<WitnessOrd>) -> Op
 /// It is what the AluVM addresses through [`GlobalsIter::at_depth`] - the `LdC`
 /// opcode loads the entry at the depth held in a register - and iterating this
 /// type walks the same order, depth 0 first.
-///
-/// It is *not* depth in the chain. The order is [`GlobalOrd`]'s, which ranks a
-/// witness by its [`WitnessOrd`] before anything else, and an unmined witness
-/// outranks a mined one - so depth 0 may well be an entry whose witness is
-/// still only tentative, sitting above entries confirmed long ago. Among mined
-/// witnesses the more recent position is the shallower one; entries sharing a
-/// witness are separated by transition type, nonce, operation id and index, in
-/// that order.
 ///
 /// The range of depths is capped by the schema's per-type limit: entries past
 /// it are dropped, and asking for a deeper one yields `None`. Archived entries
@@ -476,10 +468,13 @@ impl ContractStateEvolve for FilteredContractState<UnfilteredContractState> {
     }
 
     fn evolve_state(&mut self, op: OrdOpRef) -> Result<(), Self::Error> {
-        if let OrdOpRef::Transition(_, witness_id, ord, _) = op {
+        if let OrdOpRef::Transition(_, witness_id, _) = op {
+            // The witness ordering is not known yet: the resolver only runs in the
+            // second validation phase. Tentative is the neutral placeholder, since
+            // the only thing this filter is read for is the archived check.
             // NB: We do not check the existence of the witness since we have a
             // newer version anyway and even if it is known we have to replace it
-            self.filter.insert(witness_id, ord);
+            self.filter.insert(witness_id, WitnessOrd::Tentative);
         }
         self.unfiltered.add_operation(op);
         Ok(())

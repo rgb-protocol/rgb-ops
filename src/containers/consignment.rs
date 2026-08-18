@@ -193,8 +193,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
             {
                 let ord = self.validation_status.tx_ord_map.get(&witness_id).unwrap();
                 filter.insert(witness_id, *ord);
-                unfiltered
-                    .add_operation(OrdOpRef::Transition(transition, witness_id, *ord, bundle_id));
+                unfiltered.add_operation(OrdOpRef::Transition(transition, witness_id, bundle_id));
             }
             filter
         } else {
@@ -375,7 +374,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        let status = Validator::<FilteredContractState<UnfilteredContractState>, _, _>::validate(
+        let status = Validator::<FilteredContractState<UnfilteredContractState>, _>::validate(
             &self,
             rules,
             &resolver,

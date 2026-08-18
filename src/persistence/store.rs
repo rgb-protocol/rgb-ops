@@ -425,9 +425,8 @@ pub trait RgbStore: std::fmt::Debug {
     /// [`Self::witnesses_of_bundles`], in one batch for all the bundles it saw.
     ///
     /// Ordering and per-type limits likewise stay with Stock: the consensus
-    /// ordering is whatever the `Ord` impls on `GlobalOrd`/`OpOrd`/`WitnessPos`
-    /// in rgb-consensus say, so only the validity filter is the store's to
-    /// apply - a backend must never sort these rows itself.
+    /// ordering is whatever the `Ord` impls on `GlobalOrd`/`OpOrd` in rgb-consensus say,
+    /// so only the validity filter is the store's to apply
     fn globals(
         &self,
         contract_id: ContractId,
