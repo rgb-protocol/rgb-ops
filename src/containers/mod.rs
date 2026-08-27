@@ -25,6 +25,7 @@
 
 mod anchors;
 mod consignment;
+mod external_anchors;
 mod util;
 mod partials;
 mod file;
@@ -37,9 +38,10 @@ pub(crate) mod test_fixtures;
 pub use anchors::{SealWitness, SealWitnessMergeError, SpvProof, WitnessBundle};
 pub use consignment::{
     Consignment, ConsignmentConstraintError, ConsignmentExt, ConsignmentId, ConsignmentParseError,
-    Contract, Transfer, UncheckedConsignment, UncheckedContract, UncheckedTransfer,
-    ValidConsignment, ValidContract, ValidTransfer,
+    Contract, PendingConsignment, Transfer, UncheckedConsignment, UncheckedContract,
+    UncheckedTransfer, ValidConsignment, ValidContract, ValidTransfer,
 };
+pub use external_anchors::{AnchorResolverError, CheckedAnchorResolver, ResolveAnchor};
 pub use file::{FileContent, LoadError, UniversalFile};
 pub use partials::{Batch, Fascia};
 pub use rgb::BuilderSeal;

@@ -33,8 +33,8 @@ use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use rgb::bitcoin::Transaction as Tx;
 use rgb::commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
-    EAnchor, ExternalAnchor, Failure, ResolveWitness, SchemaRules, ValidationConfig,
-    ValidationError, Validator,
+    EAnchor, ExternalAnchor, Failure, PendingValidation, ResolveWitness, SchemaRules,
+    ValidationConfig, ValidationError, Validator,
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
@@ -51,8 +51,12 @@ use super::{
     ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
 };
 use crate::containers::anchors::SpvProof;
+use crate::containers::external_anchors::{
+    AnchorResolverError, CheckedAnchorResolver, ResolveAnchor,
+};
 use crate::contract::{ContractData, FilteredContractState, UnfilteredContractState};
 use crate::info::ContractInfo;
+use crate::stl::BridgeLocation;
 use crate::{SecretSeal, LIB_NAME_RGB_OPS};
 
 pub type Transfer = Consignment<true>;
@@ -125,6 +129,77 @@ impl ConsignmentId {
 
 pub type ValidContract = ValidConsignment<false>;
 pub type ValidTransfer = ValidConsignment<true>;
+
+/// A consignment which passed the deterministic phase 1 of validation and is waiting on the
+/// chain-dependent phase 2.
+///
+/// Keeps the consignment together with its [`PendingValidation`], so that once every obligation
+/// is discharged [`Self::finalize`] can produce the [`ValidConsignment`] ready for acceptance.
+#[derive(Clone, Debug)]
+pub struct PendingConsignment<const TRANSFER: bool> {
+    pending: PendingValidation,
+    consignment: Consignment<TRANSFER>,
+}
+
+impl<const TRANSFER: bool> PendingConsignment<TRANSFER> {
+    /// The consignment under validation.
+    pub fn consignment(&self) -> &Consignment<TRANSFER> { &self.consignment }
+
+    /// The obligations phase 2 still has to discharge, and the phase 1 findings (warnings, DAG
+    /// data) a caller may want to inspect before discharging them.
+    pub fn pending(&mut self) -> &mut PendingValidation { &mut self.pending }
+
+    /// Confirms `anchor` through a resolver checked by [`CheckedAnchorResolver::with`].
+    ///
+    /// As with witnesses, an answer obtained elsewhere can still be fed straight to
+    /// [`PendingValidation::resolve_anchor`]; what this guarantees is that a resolver asked
+    /// from here is on the right chain.
+    pub fn resolve_anchor<R: ResolveAnchor>(
+        &mut self,
+        resolver: &CheckedAnchorResolver<R>,
+        anchor: &ExternalAnchor,
+    ) -> Result<(), AnchorResolverError> {
+        if !resolver.is_confirmed(anchor)? {
+            let ExternalAnchor::MintEvent { opid, .. } = anchor;
+            return Err(AnchorResolverError::Unconfirmed(*opid));
+        }
+        Ok(self.pending.resolve_anchor(anchor)?)
+    }
+
+    /// Checks `resolver` against `location` and confirms every outstanding anchor through it.
+    ///
+    /// Where the contract commits to its bridge location is up to the schema, so it is the
+    /// caller who has to extract it.
+    pub fn resolve_all_anchors<R: ResolveAnchor>(
+        &mut self,
+        location: BridgeLocation,
+        resolver: &R,
+    ) -> Result<(), AnchorResolverError> {
+        let resolver = CheckedAnchorResolver::with(resolver, location)?;
+        let anchors = self
+            .pending
+            .unresolved_anchors()
+            .cloned()
+            .collect::<Vec<_>>();
+        for anchor in &anchors {
+            self.resolve_anchor(&resolver, anchor)?;
+        }
+        Ok(())
+    }
+
+    /// Phase 2: adjudicate and produce the consignment ready for acceptance.
+    ///
+    /// # Panics
+    ///
+    /// If any witness or external anchor is still unresolved, see
+    /// [`PendingValidation::is_resolved`].
+    pub fn finalize(self) -> ValidConsignment<TRANSFER> {
+        ValidConsignment {
+            validation_status: self.pending.finalize(),
+            consignment: self.consignment,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Display)]
 #[display("{consignment}")]
@@ -357,13 +432,17 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
         }
     }
 
-    /// Validates the consignment against caller-supplied [`SchemaRules`].
-    pub fn validate(
+    /// Phase 1: validates everything that only depends on the consignment file itself.
+    ///
+    /// Returns a [`PendingConsignment`] listing what must still be resolved (witnesses and
+    /// external anchors) before the consignment can be considered valid. The caller drives those
+    /// through [`PendingConsignment::pending`] and [`PendingConsignment::resolve_all_anchors`], and
+    /// then calls [`PendingConsignment::finalize`].
+    pub fn validate_deterministic(
         self,
         rules: &SchemaRules,
-        resolver: &impl ResolveWitness,
         validation_config: &ValidationConfig,
-    ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
+    ) -> Result<PendingConsignment<TRANSFER>, ValidationError> {
         if self.transfer != TRANSFER {
             return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
                 "invalid consignment type"
@@ -375,43 +454,7 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        let status = Validator::<FilteredContractState<UnfilteredContractState>, _>::validate(
-            &self,
-            rules,
-            &resolver,
-            (rules.schema(), self.contract_id()),
-            validation_config,
-        )?;
-
-        Ok(ValidConsignment {
-            validation_status: status,
-            consignment: self,
-        })
-    }
-
-    /// Variant of [`Self::validate`] for BFA (Bridged Fungible Asset) consignments.
-    ///
-    /// Runs the two-phase validation: Phase 1 (`validate_deterministic`) collects pending external
-    /// anchors (EVM mint events); the caller resolves them via `anchor_resolver` (return
-    /// `true` to mark an anchor resolved); Phase 2 (`finalize_with_resolver`) checks that all
-    /// anchors were resolved before returning the validated consignment.
-    pub fn validate_bfa<F>(
-        self,
-        rules: &SchemaRules,
-        resolver: &impl ResolveWitness,
-        validation_config: &ValidationConfig,
-        mut anchor_resolver: F,
-    ) -> Result<ValidConsignment<TRANSFER>, ValidationError>
-    where
-        F: FnMut(&ExternalAnchor) -> bool,
-    {
-        if self.transfer != TRANSFER {
-            return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
-                "invalid consignment type"
-            ))));
-        }
-
-        let mut validator =
+        let pending =
             Validator::<FilteredContractState<UnfilteredContractState>, _>::validate_deterministic(
                 &self,
                 rules,
@@ -419,19 +462,31 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
                 validation_config,
             )?;
 
-        let pending = validator.pending_external_anchors();
-        for anchor in &pending {
-            if anchor_resolver(anchor) {
-                validator.record_anchor_resolution(anchor);
-            }
-        }
-
-        let status = validator.finalize_with_resolver(resolver)?;
-
-        Ok(ValidConsignment {
-            validation_status: status,
+        Ok(PendingConsignment {
+            pending,
             consignment: self,
         })
+    }
+
+    /// Validates the consignment against caller-supplied [`SchemaRules`].
+    ///
+    /// Runs [`Self::validate_deterministic`] and resolves every witness sequentially against
+    /// `resolver`. Fails with [`ValidationError::ExternalAnchorsPending`] if the schema requires
+    /// external anchors to be confirmed: those cannot be resolved by a chain resolver, so such
+    /// consignments must go through [`Self::validate_deterministic`] instead.
+    pub fn validate(
+        self,
+        rules: &SchemaRules,
+        resolver: &impl ResolveWitness,
+        validation_config: &ValidationConfig,
+    ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
+        let mut pending = self.validate_deterministic(rules, validation_config)?;
+        pending.pending().resolve_all(resolver)?;
+        let anchors = pending.pending().unresolved_anchors().count();
+        if anchors > 0 {
+            return Err(ValidationError::ExternalAnchorsPending(anchors));
+        }
+        Ok(pending.finalize())
     }
 
     /// Modify a bundle in the consignment if it exists
