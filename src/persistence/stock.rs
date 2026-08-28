@@ -400,6 +400,13 @@ impl Stock {
     pub fn in_memory() -> Self {
         Self::with(MemStash::in_memory(), MemState::in_memory(), MemIndex::in_memory())
     }
+
+    /// Creates an independent in-memory snapshot without carrying over persistence providers.
+    ///
+    /// Mutating or storing the returned stock cannot modify the source stock. This is useful for
+    /// preparing multi-step operations before atomically promoting their resulting state.
+    #[inline]
+    pub fn snapshot(&self) -> Self { self.clone_no_persistence() }
 }
 
 impl<S: StashProvider, H: StateProvider, I: IndexProvider> Stock<S, H, I> {
@@ -1773,6 +1780,27 @@ mod test {
         if let Ok(schema) = stock.export_schema(schema_id) {
             println!("{:?}", schema.kit_id())
         }
+    }
+
+    #[test]
+    fn stock_snapshot_isolated_from_source() {
+        let source = Stock::in_memory();
+        let seal = GraphSeal::new_random_vout(Vout::from_u32(1));
+        let secret = seal.conceal();
+        let mut snapshot = source.snapshot();
+
+        snapshot.store_secret_seal(seal).unwrap();
+
+        assert!(source
+            .as_stash_provider()
+            .seal_secret(secret)
+            .unwrap()
+            .is_none());
+        assert!(snapshot
+            .as_stash_provider()
+            .seal_secret(secret)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
