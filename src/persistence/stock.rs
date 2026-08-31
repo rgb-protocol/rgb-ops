@@ -26,7 +26,6 @@ use std::fmt::Debug;
 use std::num::NonZeroU32;
 
 use amplify::confinement::{Confined, LargeOrdSet};
-use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
 use rgb::bitcoin::block::Header;
 use rgb::bitcoin::{OutPoint as Outpoint, Transaction as Tx, Txid};
 use rgb::dbc::{Anchor, Proof};
@@ -44,10 +43,9 @@ use strict_types::FieldName;
 
 use super::{
     ContractStateRead, Index, IndexError, IndexInconsistency, IndexProvider, IndexReadProvider,
-    IndexWriteProvider, MemContract, MemIndex, MemStash, MemState, Stash, StashDataError,
-    StashError, StashInconsistency, StashProvider, StashReadProvider, StashWriteProvider, State,
-    StateError, StateInconsistency, StateProvider, StateReadProvider, StateWriteProvider,
-    StoreTransaction,
+    IndexWriteProvider, MemContract, Stash, StashDataError, StashError, StashInconsistency,
+    StashProvider, StashReadProvider, StashWriteProvider, State, StateError, StateInconsistency,
+    StateProvider, StateReadProvider, StateWriteProvider, StoreTransaction,
 };
 use crate::containers::{
     BuilderSeal, Consignment, ConsignmentExt, ConsignmentVer, Contract, Fascia, SealWitness,
@@ -111,12 +109,7 @@ enum WitnessOrdChange {
 
 #[derive(Debug, Display, Error, From)]
 #[display(inner)]
-pub enum StockError<
-    S: StashProvider = MemStash,
-    H: StateProvider = MemState,
-    P: IndexProvider = MemIndex,
-    E: Error = Infallible,
-> {
+pub enum StockError<S: StashProvider, H: StateProvider, P: IndexProvider, E: Error = Infallible> {
     InvalidInput(E),
     Resolver(String),
     StashRead(<S as StashReadProvider>::Error),
@@ -387,8 +380,7 @@ stock_err_conv!(ComposeError, InputError);
 stock_err_conv!(ConsignError, InputError);
 stock_err_conv!(FasciaError, InputError);
 
-pub type StockErrorMem<E = Infallible> = StockError<MemStash, MemState, MemIndex, E>;
-pub type StockErrorAll<S = MemStash, H = MemState, P = MemIndex> = StockError<S, H, P, InputError>;
+pub type StockErrorAll<S, H, P> = StockError<S, H, P, InputError>;
 
 /// Resolver serving a set of already-resolved witness statuses, falling back
 /// to the wrapped resolver for the other witnesses.
@@ -411,24 +403,10 @@ impl<R: ResolveWitness> ResolveWitness for PreresolvedWitnesses<R> {
 }
 
 #[derive(Debug)]
-pub struct Stock<
-    S: StashProvider = MemStash,
-    H: StateProvider = MemState,
-    P: IndexProvider = MemIndex,
-> {
+pub struct Stock<S: StashProvider, H: StateProvider, P: IndexProvider> {
     stash: Stash<S>,
     state: State<H>,
     index: Index<P>,
-}
-
-impl<S: StashProvider, H: StateProvider, P: IndexProvider> CloneNoPersistence for Stock<S, H, P> {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            stash: self.stash.clone_no_persistence(),
-            state: self.state.clone_no_persistence(),
-            index: self.index.clone_no_persistence(),
-        }
-    }
 }
 
 impl<S: StashProvider, H: StateProvider, P: IndexProvider> Default for Stock<S, H, P>
@@ -443,61 +421,6 @@ where
             state: default!(),
             index: default!(),
         }
-    }
-}
-
-impl Stock {
-    #[inline]
-    pub fn in_memory() -> Self {
-        Self::with(MemStash::in_memory(), MemState::in_memory(), MemIndex::in_memory())
-    }
-}
-
-impl<S: StashProvider, H: StateProvider, I: IndexProvider> Stock<S, H, I> {
-    pub fn load<P>(provider: P, autosave: bool) -> Result<Self, PersistenceError>
-    where P: Clone
-            + PersistenceProvider<S>
-            + PersistenceProvider<H>
-            + PersistenceProvider<I>
-            + 'static {
-        let stash = S::load(provider.clone(), autosave)?;
-        let state = H::load(provider.clone(), autosave)?;
-        let index = I::load(provider, autosave)?;
-        Ok(Self::with(stash, state, index))
-    }
-
-    pub fn make_persistent<P>(
-        &mut self,
-        provider: P,
-        autosave: bool,
-    ) -> Result<bool, PersistenceError>
-    where
-        P: Clone
-            + PersistenceProvider<S>
-            + PersistenceProvider<H>
-            + PersistenceProvider<I>
-            + 'static,
-    {
-        let a = self
-            .as_stash_provider_mut()
-            .make_persistent(provider.clone(), autosave)?;
-        let b = self
-            .as_state_provider_mut()
-            .make_persistent(provider.clone(), autosave)?;
-        let c = self
-            .as_index_provider_mut()
-            .make_persistent(provider, autosave)?;
-        Ok(a && b && c)
-    }
-
-    pub fn store(&mut self) -> Result<(), PersistenceError> {
-        // TODO: Revert on failure
-
-        self.as_stash_provider_mut().store()?;
-        self.as_state_provider_mut().store()?;
-        self.as_index_provider_mut().store()?;
-
-        Ok(())
     }
 }
 
@@ -524,10 +447,13 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     #[doc(hidden)]
     pub fn as_index_provider_mut(&mut self) -> &mut P { self.index.as_provider_mut() }
 
-    pub fn schemata(&self) -> Result<impl Iterator<Item = SchemaInfo> + '_, StockError<S, H, P>> {
-        Ok(self.stash.schemata()?.map(SchemaInfo::with))
+    pub fn schemata(&self) -> impl Iterator<Item = Result<SchemaInfo, StockError<S, H, P>>> + '_ {
+        self.stash
+            .schemata()
+            .map(|r| r.map(|s| SchemaInfo::with(&s)).map_err(StockError::from))
     }
-    pub fn schema(&self, schema_id: SchemaId) -> Result<&Schema, StockError<S, H, P>> {
+
+    pub fn schema(&self, schema_id: SchemaId) -> Result<Schema, StockError<S, H, P>> {
         Ok(self.stash.schema(schema_id)?)
     }
 
@@ -535,7 +461,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     /// absence as [`StockError::SchemaNotImported`] rather than as a stash
     /// inconsistency: a missing schema means the user has not imported the
     /// schema definition, not that the storage is corrupted.
-    fn load_imported_schema(&self, schema_id: SchemaId) -> Result<&Schema, StockError<S, H, P>> {
+    fn load_imported_schema(&self, schema_id: SchemaId) -> Result<Schema, StockError<S, H, P>> {
         match self.stash.schema(schema_id) {
             Ok(schema) => Ok(schema),
             Err(StashError::Inconsistency(StashInconsistency::SchemaAbsent(id))) => {
@@ -547,8 +473,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
     pub fn contracts(
         &self,
-    ) -> Result<impl Iterator<Item = ContractInfo> + '_, StockError<S, H, P>> {
-        Ok(self.stash.geneses()?.map(ContractInfo::with))
+    ) -> impl Iterator<Item = Result<ContractInfo, StockError<S, H, P>>> + '_ {
+        self.stash
+            .geneses()
+            .map(|r| r.map(|g| ContractInfo::with(&g)).map_err(StockError::from))
     }
 
     /// Iterates over ids of all contract assigning state to the provided set of
@@ -556,7 +484,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     pub fn contracts_assigning(
         &self,
         outputs: impl IntoIterator<Item = impl Into<Outpoint>>,
-    ) -> Result<impl Iterator<Item = ContractId> + '_, StockError<S, H, P>> {
+    ) -> Result<BTreeSet<ContractId>, StockError<S, H, P>> {
         let outputs = outputs
             .into_iter()
             .map(|o| o.into())
@@ -578,7 +506,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<ContractInfo, StockError<S, H, P>> {
-        Ok(ContractInfo::with(self.stash.genesis(contract_id)?))
+        Ok(ContractInfo::with(&self.stash.genesis(contract_id)?))
     }
 
     pub fn contract_state(
@@ -643,6 +571,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             HashMap::<OutputSeal, HashMap<Opout, AllocatedState>>::with_capacity(outputs.len());
 
         for item in state.fungible_all() {
+            let item = item.expect("state read failure");
             let outpoint = item.seal.into();
             if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal)
@@ -652,15 +581,17 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         }
 
         for item in state.data_all() {
+            let item = item.expect("state read failure");
             let outpoint = item.seal.into();
             if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal)
                     .or_default()
-                    .insert(item.opout, AllocatedState::Data(item.state.clone()));
+                    .insert(item.opout, AllocatedState::Data(item.state));
             }
         }
 
         for item in state.rights_all() {
+            let item = item.expect("state read failure");
             let outpoint = item.seal.into();
             if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal)
@@ -958,7 +889,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
 
             let (witness_ids, bundle_contract_id) = self.index.bundle_info(bundle_id)?;
-            let witness_ids = witness_ids.collect::<Vec<_>>();
+            let witness_ids = witness_ids.into_iter().collect::<Vec<_>>();
             // skip bundles not associated to the terminals witness
             if witness_id.is_some_and(|wid| !witness_ids.contains(&wid)) {
                 continue;
@@ -991,7 +922,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             }
 
             if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
-                wbundle.bundle.reveal_transition(transition.clone())?;
+                wbundle.bundle.reveal_transition(transition)?;
             } else {
                 bundles.insert(
                     bundle_id,
@@ -1029,7 +960,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             parent_opids.extend(transition.inputs().iter().map(|input| input.op));
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
             if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
-                wbundle.bundle.reveal_transition(transition.clone())?;
+                wbundle.bundle.reveal_transition(transition)?;
             } else {
                 let (witness_ids, bundle_contract_id) = self.index.bundle_info(bundle_id)?;
                 let bundle_witness = self.state.select_valid_witness(witness_ids)?;
@@ -1254,6 +1185,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             &mut Index<P>,
         ) -> Result<(), StockError<S, H, P, E>>,
     ) -> Result<(), StockError<S, H, P, E>> {
+        // FIXME: this doesn't guarantee atomicity
         self.state.begin_transaction()?;
         self.stash
             .begin_transaction()
@@ -1426,7 +1358,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         // witness ords as they will be once the consignment is consumed:
         // the stored ones overlaid with the fresh resolutions
-        let mut witnesses = self.as_state_provider().witnesses().release();
+        let mut witnesses = self
+            .as_state_provider()
+            .all_witness_ords()
+            .map_err(StockError::StateRead)?;
         let known_witness_ids: BTreeSet<Txid> = witnesses.keys().copied().collect();
         for (witness_id, status) in &statuses {
             witnesses.insert(*witness_id, status.witness_ord());
@@ -1440,7 +1375,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 continue;
             }
             let alt_witness_ids: BTreeSet<Txid> = match self.index.bundle_info(*bundle_id) {
-                Ok((witness_ids, _)) => witness_ids.collect(),
+                Ok((witness_ids, _)) => witness_ids,
                 // the bundle is not known yet, so it has no other witnesses
                 Err(IndexError::Inconsistency(IndexInconsistency::BundleWitnessUnknown(_))) => {
                     bset![]
@@ -1531,13 +1466,19 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         // the consignment was validated and all its bundles have a valid
         // witness: revalidate any of its operations that a reorg had
         // previously set as invalid, together with their descendants
-        let mut invalid_ops = self.as_state_provider().invalid_ops();
+        let mut invalid_ops = self
+            .as_state_provider()
+            .invalid_ops()
+            .map_err(StockError::StateRead)?;
         if consignment_bundles
             .iter()
             .any(|(_, _, opids)| opids.iter().any(|opid| invalid_ops.contains(opid)))
         {
             self.state.begin_transaction()?;
-            let witnesses = self.as_state_provider().witnesses().release();
+            let witnesses = self
+                .as_state_provider()
+                .all_witness_ords()
+                .map_err(StockError::StateRead)?;
             let mut maybe_became_valid_opids: BTreeSet<OpId> = consignment_bundles
                 .iter()
                 .flat_map(|(_, _, opids)| opids.iter().copied())
@@ -1594,11 +1535,12 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         })
     }
 
-    fn transition(&self, opid: OpId) -> Result<&Transition, StockError<S, H, P, ConsignError>> {
+    fn transition(&self, opid: OpId) -> Result<Transition, StockError<S, H, P, ConsignError>> {
         let bundle_id = self.index.bundle_id_for_op(opid)?;
         let bundle = self.stash.bundle(bundle_id)?;
         bundle
             .get_transition(opid)
+            .cloned()
             .ok_or(ConsignError::Concealed(bundle_id, opid).into())
     }
 
@@ -1861,15 +1803,18 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         // stock live on the same chain, so any genesis answers for all of them
         let layer1 = self
             .stash
-            .geneses()?
+            .geneses()
             .next()
+            .transpose()?
             .map(|genesis| genesis.chain_net.layer1())
             .unwrap_or(Layer1::Bitcoin);
         let mut succeeded = 0;
         let mut failed = map![];
         self.state.begin_transaction()?;
-        let witnesses = self.as_state_provider().witnesses();
-        let mut witnesses = witnesses.release();
+        let mut witnesses = self
+            .as_state_provider()
+            .all_witness_ords()
+            .map_err(StockError::StateRead)?;
         let mut became_invalid_witnesses = bmap!();
         let mut became_valid_witnesses = bmap!();
         let mut headers = HashMap::new();
@@ -1904,8 +1849,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         let mut visited = bset!();
         for bundle_ids in became_invalid_witnesses.values() {
             for bundle_id in bundle_ids {
-                let bundle_witness_ids: BTreeSet<Txid> =
-                    self.index.bundle_info(*bundle_id)?.0.collect();
+                let bundle_witness_ids = self.index.bundle_info(*bundle_id)?.0;
                 // set the bundle operations as invalid only if there are no valid witnesses
                 // associated to the bundle
                 if bundle_witness_ids
@@ -1923,7 +1867,10 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         // 3. set validity of operations
         let mut maybe_became_valid_opids = bset!();
         // get all operations that became invalid and ones that were already invalid
-        let mut invalid_ops_pre = self.as_state_provider().invalid_ops();
+        let mut invalid_ops_pre = self
+            .as_state_provider()
+            .invalid_ops()
+            .map_err(StockError::StateRead)?;
         for bundle_ids in became_valid_witnesses.values() {
             for bundle_id in bundle_ids {
                 // store operations that may become valid (to be sure their ancestors are
@@ -2077,7 +2024,7 @@ pub struct UpdateRes {
     pub failed: HashMap<Txid, String>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod test {
     use std::sync::mpsc;
     use std::time::Duration;
@@ -2100,11 +2047,12 @@ mod test {
     use strict_encoding::StrictDumb;
 
     use super::*;
+    use crate::persistence::sql::{open_in_memory, SqliteStock};
     use crate::persistence::{IndexWriteProvider, StashWriteProvider};
 
     #[test]
     fn test_consign() {
-        let mut stock = Stock::in_memory();
+        let mut stock = open_in_memory().unwrap();
         let seal = GraphSeal::new_random_vout(Vout::from_u32(0));
         let secret_seal = seal.conceal();
 
@@ -2125,7 +2073,7 @@ mod test {
 
     #[test]
     fn test_export_contract() {
-        let stock = Stock::in_memory();
+        let stock = open_in_memory().unwrap();
         let contract_id =
             ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                 .unwrap();
@@ -2136,7 +2084,7 @@ mod test {
 
     #[test]
     fn test_schema_rules() {
-        let stock = Stock::in_memory();
+        let stock = open_in_memory().unwrap();
         let hasher = Sha256::default();
         let schema_id = SchemaId::from(hasher);
         if let Ok(rules) = stock.schema_rules(schema_id) {
@@ -2146,7 +2094,7 @@ mod test {
 
     #[test]
     fn test_transition_builder() {
-        let stock = Stock::in_memory();
+        let stock = open_in_memory().unwrap();
         let hasher = Sha256::default();
 
         let bytes_hash = hasher.finish();
@@ -2169,7 +2117,7 @@ mod test {
 
         let (tx, rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
-            let mut stock = Stock::in_memory();
+            let mut stock = open_in_memory().unwrap();
             let contract_id =
                 ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                     .unwrap();
@@ -2188,7 +2136,9 @@ mod test {
             };
 
             let mut all_opids = bset![];
-            let mut register = |stock: &mut Stock, transition: Transition| -> (OpId, BundleId) {
+            let mut register = |stock: &mut SqliteStock,
+                                transition: Transition|
+             -> (OpId, BundleId) {
                 let opid = transition.id();
                 let input_map = NonEmptyOrdMap::from_checked(
                     transition
@@ -2225,7 +2175,7 @@ mod test {
 
             // revalidate the whole graph starting from the root, as if all
             // the witnesses became valid again
-            let mut invalid_ops = stock.as_state_provider().invalid_ops();
+            let mut invalid_ops = stock.as_state_provider().invalid_ops().unwrap();
             let mut maybe_became_valid_opids = all_opids;
             let witnesses = bmap! { witness_id => WitnessOrd::Tentative };
             let valid = stock
@@ -2239,7 +2189,7 @@ mod test {
                 .unwrap();
 
             assert!(valid);
-            assert!(stock.as_state_provider().invalid_ops().is_empty());
+            assert!(stock.as_state_provider().invalid_ops().unwrap().is_empty());
             tx.send(()).unwrap();
         });
 
@@ -2271,7 +2221,7 @@ mod test {
     fn txid(nonce: u8) -> Txid { tx(nonce).compute_txid() }
 
     /// Seeds a dumb schema and its genesis, so that the consignment can be assembled.
-    fn seed_contract(stock: &mut Stock) -> ContractId {
+    fn seed_contract(stock: &mut SqliteStock) -> ContractId {
         let schema = Schema::strict_dumb();
         let mut genesis = Genesis::strict_dumb();
         genesis.schema_id = schema.schema_id();
@@ -2345,7 +2295,7 @@ mod test {
 
     /// Persists `bundle` as anchored to the transaction identified by `nonce`
     fn seed_witness_bundle(
-        stock: &mut Stock,
+        stock: &mut SqliteStock,
         contract_id: ContractId,
         nonce: u8,
         bundle: TransitionBundle,
@@ -2401,7 +2351,7 @@ mod test {
     /// Apply terminal_seal_cases to stock.transfer
     #[test]
     fn terminal_seals_from_stored_bundle() {
-        let mut stock = Stock::in_memory();
+        let mut stock = open_in_memory().unwrap();
         let contract_id = seed_contract(&mut stock);
 
         let witness_nonce = 0xAA;
@@ -2437,7 +2387,7 @@ mod test {
     /// Apply terminal_seal_cases to stock.transfer_from_fascia
     #[test]
     fn terminal_seals_from_fascia() {
-        let mut stock = Stock::in_memory();
+        let mut stock = open_in_memory().unwrap();
         let contract_id = seed_contract(&mut stock);
 
         let witness_nonce = 0xAA;
@@ -2477,7 +2427,7 @@ mod test {
     /// distinct witnesses, the third sits on a pre-existing UTXO (`TxPtr::Txid`)
     #[test]
     fn terminal_seals_across_multiple_witnesses() {
-        let mut stock = Stock::in_memory();
+        let mut stock = open_in_memory().unwrap();
         let contract_id = seed_contract(&mut stock);
         let vout = 1u32;
 

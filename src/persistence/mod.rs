@@ -40,7 +40,10 @@ mod memory;
 pub mod fs;
 #[cfg(feature = "legacy")]
 mod legacy;
+#[cfg(feature = "sqlite")]
+pub mod sql;
 
+pub use aluvm::library::{Lib, LibId};
 pub use index::{
     Index, IndexError, IndexInconsistency, IndexProvider, IndexReadError, IndexReadProvider,
     IndexWriteError, IndexWriteProvider,
@@ -60,7 +63,7 @@ pub use state::{
 };
 pub use stock::{
     ComposeError, ConsignError, ContractAssignments, FasciaError, InputError as StockInputError,
-    Stock, StockError, StockErrorAll, StockErrorMem, UpdateRes,
+    Stock, StockError, StockErrorAll, UpdateRes,
 };
 
 pub trait StoreTransaction {

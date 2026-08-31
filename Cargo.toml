@@ -55,7 +55,6 @@ crate-type = ["cdylib", "rlib"] # We need this for WASM
 
 [dependencies]
 amplify = { workspace = true }
-nonasync = { workspace = true }
 rgb-ascii-armor = { workspace = true }
 baid64 = { workspace = true }
 bitcoincore-rpc = { workspace = true, optional = true }
@@ -70,6 +69,7 @@ chrono = "0.4.45"
 rand = "0.9.1"
 serde_crate = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 
 [features]
 default = []
@@ -81,6 +81,7 @@ all = [
     "fs",
     "legacy",
     "serde",
+    "sqlite",
 ]
 esplora_blocking = [
     "esplora-client",
@@ -107,6 +108,7 @@ serde = [
 ]
 fs = []
 legacy = []
+sqlite = ["dep:rusqlite"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

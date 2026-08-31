@@ -30,30 +30,21 @@ use amplify::confinement::{
     self, LargeOrdMap, LargeOrdSet, MediumOrdSet, SmallOrdMap, SmallOrdSet, TinyOrdMap,
 };
 use amplify::num::u24;
-use nonasync::persistence::{CloneNoPersistence, Persistence, PersistenceError, Persisting};
 use rgb::bitcoin::{OutPoint as Outpoint, Txid};
-use rgb::commit_verify::{CommitId, Conceal};
-use rgb::dbc::tapret::TapretCommitment;
-use rgb::validation::DbcProof;
 use rgb::vm::{
     ContractStateAccess, ContractStateEvolve, GlobalOrd, GlobalStateEntry, GlobalsIter, OrdOpRef,
     UnknownGlobalStateType, WitnessOrd,
 };
 use rgb::{
-    Assign, AssignmentType, Assignments, AssignmentsRef, BuilderSeal, BundleId, ContractId,
-    ExposedSeal, ExposedState, FungibleState, Genesis, GenesisSeal, GlobalStateType, GraphSeal,
-    OpId, Operation, Opout, OutputSeal, RevealedData, RevealedValue, Schema, SchemaId, SecretSeal,
-    Transition, TransitionBundle, TypedAssigns, VoidState,
+    Assign, AssignmentType, Assignments, AssignmentsRef, BundleId, ContractId, ExposedSeal,
+    ExposedState, FungibleState, Genesis, GlobalStateType, GraphSeal, OpId, Operation, Opout,
+    OutputSeal, RevealedData, RevealedValue, Schema, SchemaId, SecretSeal, Transition,
+    TransitionBundle, TypedAssigns, VoidState,
 };
 use strict_encoding::{DefaultBasedStrictDumb, StrictDeserialize, StrictSerialize};
 use strict_types::TypeSystem;
 
-use super::{
-    ContractStateRead, ContractStateWrite, IndexInconsistency, IndexProvider, IndexReadError,
-    IndexReadProvider, IndexWriteError, IndexWriteProvider, StashInconsistency, StashProvider,
-    StashProviderError, StashReadProvider, StashWriteProvider, StateInconsistency, StateProvider,
-    StateReadProvider, StateWriteProvider, StoreTransaction,
-};
+use super::{ContractStateRead, ContractStateWrite, IndexReadError, IndexWriteError};
 use crate::containers::SealWitness;
 use crate::contract::{GlobalOut, KnownState, OpWitness, OutputAssignment};
 use crate::LIB_NAME_RGB_STORAGE;
@@ -61,9 +52,6 @@ use crate::LIB_NAME_RGB_STORAGE;
 #[derive(Debug, Display, Error, From)]
 #[display(inner)]
 pub enum MemError {
-    #[from]
-    Persistence(PersistenceError),
-
     #[from]
     Confinement(confinement::Error),
 }
@@ -78,10 +66,6 @@ pub enum MemError {
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_STORAGE, dumb = Self::in_memory())]
 pub struct MemStash {
-    #[getter(skip)]
-    #[strict_type(skip)]
-    persistence: Option<Persistence<Self>>,
-
     schemata: TinyOrdMap<SchemaId, Schema>,
     geneses: SmallOrdMap<ContractId, Genesis>,
     bundles: LargeOrdMap<BundleId, TransitionBundle>,
@@ -97,7 +81,6 @@ impl StrictDeserialize for MemStash {}
 impl MemStash {
     pub fn in_memory() -> Self {
         Self {
-            persistence: none!(),
             schemata: empty!(),
             geneses: empty!(),
             bundles: empty!(),
@@ -106,175 +89,6 @@ impl MemStash {
             type_system: none!(),
             libs: empty!(),
         }
-    }
-}
-
-impl CloneNoPersistence for MemStash {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            persistence: None,
-            schemata: self.schemata.clone(),
-            geneses: self.geneses.clone(),
-            bundles: self.bundles.clone(),
-            witnesses: self.witnesses.clone(),
-            secret_seals: self.secret_seals.clone(),
-            type_system: self.type_system.clone(),
-            libs: self.libs.clone(),
-        }
-    }
-}
-
-impl Persisting for MemStash {
-    #[inline]
-    fn persistence(&self) -> Option<&Persistence<Self>> { self.persistence.as_ref() }
-    #[inline]
-    fn persistence_mut(&mut self) -> Option<&mut Persistence<Self>> { self.persistence.as_mut() }
-    #[inline]
-    fn as_mut_persistence(&mut self) -> &mut Option<Persistence<Self>> { &mut self.persistence }
-}
-
-impl StoreTransaction for MemStash {
-    type TransactionErr = MemError;
-    #[inline]
-    fn begin_transaction(&mut self) -> Result<(), Self::TransactionErr> {
-        self.mark_dirty();
-        Ok(())
-    }
-    #[inline]
-    fn commit_transaction(&mut self) -> Result<(), Self::TransactionErr> { Ok(self.store()?) }
-    #[inline]
-    fn rollback_transaction(&mut self) { unreachable!() }
-}
-
-impl StashProvider for MemStash {}
-
-impl StashReadProvider for MemStash {
-    // With in-memory data we have no connectivity or I/O errors
-    type Error = Infallible;
-
-    fn type_system(&self) -> Result<&TypeSystem, Self::Error> { Ok(&self.type_system) }
-
-    fn lib(&self, id: LibId) -> Result<&Lib, StashProviderError<Self::Error>> {
-        self.libs
-            .get(&id)
-            .ok_or_else(|| StashInconsistency::LibAbsent(id).into())
-    }
-
-    fn schemata(&self) -> Result<impl Iterator<Item = &Schema>, Self::Error> {
-        Ok(self.schemata.values())
-    }
-
-    fn schema(&self, schema_id: SchemaId) -> Result<&Schema, StashProviderError<Self::Error>> {
-        self.schemata
-            .get(&schema_id)
-            .ok_or_else(|| StashInconsistency::SchemaAbsent(schema_id).into())
-    }
-
-    fn geneses(&self) -> Result<impl Iterator<Item = &Genesis>, Self::Error> {
-        Ok(self.geneses.values())
-    }
-
-    fn genesis(
-        &self,
-        contract_id: ContractId,
-    ) -> Result<&Genesis, StashProviderError<Self::Error>> {
-        self.geneses
-            .get(&contract_id)
-            .ok_or(StashInconsistency::ContractAbsent(contract_id).into())
-    }
-
-    fn witness_ids(&self) -> Result<impl Iterator<Item = Txid>, Self::Error> {
-        Ok(self.witnesses.keys().copied())
-    }
-
-    fn bundle_ids(&self) -> Result<impl Iterator<Item = BundleId>, Self::Error> {
-        Ok(self.bundles.keys().copied())
-    }
-
-    fn bundle(
-        &self,
-        bundle_id: BundleId,
-    ) -> Result<&TransitionBundle, StashProviderError<Self::Error>> {
-        self.bundles
-            .get(&bundle_id)
-            .ok_or(StashInconsistency::BundleAbsent(bundle_id).into())
-    }
-
-    fn witness(&self, witness_id: Txid) -> Result<&SealWitness, StashProviderError<Self::Error>> {
-        self.witnesses
-            .get(&witness_id)
-            .ok_or(StashInconsistency::WitnessAbsent(witness_id).into())
-    }
-
-    fn taprets(&self) -> Result<impl Iterator<Item = (Txid, TapretCommitment)>, Self::Error> {
-        Ok(self
-            .witnesses
-            .iter()
-            .filter_map(|(witness_id, witness)| match &witness.dbc_proof {
-                DbcProof::Tapret(tapret_proof) => Some((*witness_id, TapretCommitment {
-                    mpc: witness.merkle_block.commit_id(),
-                    nonce: tapret_proof.path_proof.nonce(),
-                })),
-                _ => None,
-            }))
-    }
-
-    fn seal_secret(&self, secret: SecretSeal) -> Result<Option<GraphSeal>, Self::Error> {
-        Ok(self
-            .secret_seals
-            .iter()
-            .find(|s| s.conceal() == secret)
-            .copied())
-    }
-
-    fn secret_seals(&self) -> Result<impl Iterator<Item = GraphSeal>, Self::Error> {
-        Ok(self.secret_seals.iter().copied())
-    }
-}
-
-impl StashWriteProvider for MemStash {
-    type Error = MemError;
-
-    fn replace_schema(&mut self, schema: Schema) -> Result<bool, Self::Error> {
-        let schema_id = schema.schema_id();
-        if !self.schemata.contains_key(&schema_id) {
-            self.schemata.insert(schema_id, schema)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn replace_genesis(&mut self, genesis: Genesis) -> Result<bool, Self::Error> {
-        let contract_id = genesis.contract_id();
-        let present = self.geneses.insert(contract_id, genesis)?.is_some();
-        Ok(!present)
-    }
-
-    fn replace_bundle(&mut self, bundle: TransitionBundle) -> Result<bool, Self::Error> {
-        let bundle_id = bundle.bundle_id();
-        let present = self.bundles.insert(bundle_id, bundle)?.is_some();
-        Ok(!present)
-    }
-
-    fn replace_witness(&mut self, witness: SealWitness) -> Result<bool, Self::Error> {
-        let witness_id = witness.witness_id();
-        let present = self.witnesses.insert(witness_id, witness)?.is_some();
-        Ok(!present)
-    }
-
-    fn consume_types(&mut self, types: TypeSystem) -> Result<(), Self::Error> {
-        Ok(self.type_system.extend(types)?)
-    }
-
-    fn replace_lib(&mut self, lib: Lib) -> Result<bool, Self::Error> {
-        let present = self.libs.insert(lib.id(), lib)?.is_some();
-        Ok(!present)
-    }
-
-    fn add_secret_seal(&mut self, seal: GraphSeal) -> Result<bool, Self::Error> {
-        let present = self.secret_seals.contains(&seal);
-        self.secret_seals.push(seal)?;
-        Ok(!present)
     }
 }
 
@@ -287,10 +101,6 @@ impl StashWriteProvider for MemStash {
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_STORAGE, dumb = Self::in_memory())]
 pub struct MemState {
-    #[getter(skip)]
-    #[strict_type(skip)]
-    persistence: Option<Persistence<Self>>,
-
     witnesses: LargeOrdMap<Txid, WitnessOrd>,
     invalid_ops: LargeOrdSet<OpId>,
     contracts: SmallOrdMap<ContractId, MemContractState>,
@@ -302,163 +112,10 @@ impl StrictDeserialize for MemState {}
 impl MemState {
     pub fn in_memory() -> Self {
         Self {
-            persistence: none!(),
             witnesses: empty!(),
             invalid_ops: empty!(),
             contracts: empty!(),
         }
-    }
-}
-
-impl CloneNoPersistence for MemState {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            persistence: None,
-            witnesses: self.witnesses.clone(),
-            invalid_ops: empty!(),
-            contracts: self.contracts.clone(),
-        }
-    }
-}
-
-impl Persisting for MemState {
-    #[inline]
-    fn persistence(&self) -> Option<&Persistence<Self>> { self.persistence.as_ref() }
-    #[inline]
-    fn persistence_mut(&mut self) -> Option<&mut Persistence<Self>> { self.persistence.as_mut() }
-    #[inline]
-    fn as_mut_persistence(&mut self) -> &mut Option<Persistence<Self>> { &mut self.persistence }
-}
-
-impl StoreTransaction for MemState {
-    type TransactionErr = MemError;
-    #[inline]
-    fn begin_transaction(&mut self) -> Result<(), Self::TransactionErr> {
-        self.mark_dirty();
-        Ok(())
-    }
-    #[inline]
-    fn commit_transaction(&mut self) -> Result<(), Self::TransactionErr> { Ok(self.store()?) }
-    #[inline]
-    fn rollback_transaction(&mut self) { unreachable!() }
-}
-
-impl StateProvider for MemState {}
-
-impl StateReadProvider for MemState {
-    type ContractRead<'a> = MemContract<&'a MemContractState>;
-    type Error = StateInconsistency;
-
-    fn contract_state(
-        &self,
-        contract_id: ContractId,
-    ) -> Result<Self::ContractRead<'_>, Self::Error> {
-        let unfiltered = self
-            .contracts
-            .get(&contract_id)
-            .ok_or(StateInconsistency::UnknownContract(contract_id))?;
-        let filter = self
-            .witnesses
-            .iter()
-            .filter(|(id, _)| {
-                let id = Some(**id);
-                unfiltered
-                    .global
-                    .values()
-                    .flat_map(|state| state.known.keys())
-                    .any(|out| out.witness_id() == id)
-                    || unfiltered.rights.iter().any(|a| a.witness == id)
-                    || unfiltered.fungibles.iter().any(|a| a.witness == id)
-                    || unfiltered.data.iter().any(|a| a.witness == id)
-            })
-            .map(|(id, ord)| (*id, *ord))
-            .collect();
-        Ok(MemContract::new(filter, self.invalid_ops.clone().release(), unfiltered))
-    }
-
-    fn witnesses(&self) -> LargeOrdMap<Txid, WitnessOrd> { self.witnesses.clone() }
-
-    fn invalid_ops(&self) -> LargeOrdSet<OpId> { self.invalid_ops.clone() }
-}
-
-impl StateWriteProvider for MemState {
-    type ContractWrite<'a> = MemContractWriter<'a>;
-    type Error = MemError;
-
-    fn register_contract(
-        &mut self,
-        schema: &Schema,
-        genesis: &Genesis,
-    ) -> Result<Self::ContractWrite<'_>, Self::Error> {
-        // TODO: Add begin/commit transaction
-        let contract_id = genesis.contract_id();
-        // This crazy construction is caused by a stupidity of rust borrow checker
-        let contract = if self.contracts.contains_key(&contract_id) {
-            if let Some(contract) = self.contracts.get_mut(&contract_id) {
-                contract
-            } else {
-                unreachable!();
-            }
-        } else {
-            self.contracts
-                .insert(contract_id, MemContractState::new(schema, contract_id))?;
-            self.contracts.get_mut(&contract_id).expect("just inserted")
-        };
-        let mut writer = MemContractWriter {
-            writer: Box::new(
-                |witness_id: Txid, ord: WitnessOrd| -> Result<(), confinement::Error> {
-                    // NB: We do not check the existence of the witness since we have a newer
-                    // version anyway and even if it is known we have to replace it
-                    self.witnesses.insert(witness_id, ord)?;
-                    Ok(())
-                },
-            ),
-            contract,
-        };
-        writer.add_genesis(genesis)?;
-        Ok(writer)
-    }
-
-    fn update_contract(
-        &mut self,
-        contract_id: ContractId,
-    ) -> Result<Option<Self::ContractWrite<'_>>, Self::Error> {
-        // TODO: Add begin/commit transaction
-        Ok(self
-            .contracts
-            .get_mut(&contract_id)
-            .map(|contract| MemContractWriter {
-                // We can't move this constructor to a dedicated method due to the rust borrower
-                // checker
-                writer: Box::new(
-                    |witness_id: Txid, ord: WitnessOrd| -> Result<(), confinement::Error> {
-                        // NB: We do not check the existence of the witness since we have a newer
-                        // version anyway and even if it is known we have to replace
-                        // it
-                        self.witnesses.insert(witness_id, ord)?;
-                        Ok(())
-                    },
-                ),
-                contract,
-            }))
-    }
-
-    fn upsert_witness(
-        &mut self,
-        witness_id: Txid,
-        witness_ord: WitnessOrd,
-    ) -> Result<(), Self::Error> {
-        self.witnesses.insert(witness_id, witness_ord)?;
-        Ok(())
-    }
-
-    fn update_op(&mut self, opid: OpId, valid: bool) -> Result<(), Self::Error> {
-        if valid {
-            self.invalid_ops.remove(&opid)?;
-        } else {
-            self.invalid_ops.push(opid)?;
-        }
-        Ok(())
     }
 }
 
@@ -808,6 +465,8 @@ impl ContractStateEvolve for MemContract<MemContractState> {
 }
 
 impl<M: Borrow<MemContractState>> ContractStateRead for MemContract<M> {
+    type Error = Infallible;
+
     #[inline]
     fn contract_id(&self) -> ContractId { self.unfiltered.borrow().contract_id }
 
@@ -820,33 +479,45 @@ impl<M: Borrow<MemContractState>> ContractStateRead for MemContract<M> {
     }
 
     #[inline]
-    fn rights_all(&self) -> impl Iterator<Item = &OutputAssignment<VoidState>> {
+    fn rights_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<VoidState>, Self::Error>> + '_ {
         self.unfiltered
             .borrow()
             .rights
             .iter()
             .filter(|assignment| assignment.check_witness(&self.filter))
             .filter(|assignment| assignment.check_op(&self.invalid_ops))
+            .cloned()
+            .map(Ok)
     }
 
     #[inline]
-    fn fungible_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedValue>> {
+    fn fungible_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<RevealedValue>, Self::Error>> + '_ {
         self.unfiltered
             .borrow()
             .fungibles
             .iter()
             .filter(|assignment| assignment.check_witness(&self.filter))
             .filter(|assignment| assignment.check_op(&self.invalid_ops))
+            .cloned()
+            .map(Ok)
     }
 
     #[inline]
-    fn data_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedData>> {
+    fn data_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<RevealedData>, Self::Error>> + '_ {
         self.unfiltered
             .borrow()
             .data
             .iter()
             .filter(|assignment| assignment.check_witness(&self.filter))
             .filter(|assignment| assignment.check_op(&self.invalid_ops))
+            .cloned()
+            .map(Ok)
     }
 }
 
@@ -952,10 +623,6 @@ impl DefaultBasedStrictDumb for ContractIndex {}
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_STORAGE, dumb = Self::in_memory())]
 pub struct MemIndex {
-    #[getter(skip)]
-    #[strict_type(skip)]
-    persistence: Option<Persistence<Self>>,
-
     op_bundle_children_index: LargeOrdMap<OpId, SmallOrdSet<BundleId>>,
     op_bundle_index: LargeOrdMap<OpId, BundleId>,
     bundle_contract_index: LargeOrdMap<BundleId, ContractId>,
@@ -970,7 +637,6 @@ impl StrictDeserialize for MemIndex {}
 impl MemIndex {
     pub fn in_memory() -> Self {
         Self {
-            persistence: None,
             op_bundle_children_index: empty!(),
             op_bundle_index: empty!(),
             bundle_contract_index: empty!(),
@@ -978,333 +644,5 @@ impl MemIndex {
             contract_index: empty!(),
             terminal_index: empty!(),
         }
-    }
-}
-
-impl CloneNoPersistence for MemIndex {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            persistence: None,
-            op_bundle_children_index: self.op_bundle_children_index.clone(),
-            op_bundle_index: self.op_bundle_index.clone(),
-            bundle_contract_index: self.bundle_contract_index.clone(),
-            bundle_witness_index: self.bundle_witness_index.clone(),
-            contract_index: self.contract_index.clone(),
-            terminal_index: self.terminal_index.clone(),
-        }
-    }
-}
-
-impl Persisting for MemIndex {
-    #[inline]
-    fn persistence(&self) -> Option<&Persistence<Self>> { self.persistence.as_ref() }
-    #[inline]
-    fn persistence_mut(&mut self) -> Option<&mut Persistence<Self>> { self.persistence.as_mut() }
-    #[inline]
-    fn as_mut_persistence(&mut self) -> &mut Option<Persistence<Self>> { &mut self.persistence }
-}
-
-impl StoreTransaction for MemIndex {
-    type TransactionErr = MemError;
-    #[inline]
-    fn begin_transaction(&mut self) -> Result<(), Self::TransactionErr> {
-        self.mark_dirty();
-        Ok(())
-    }
-    #[inline]
-    fn commit_transaction(&mut self) -> Result<(), Self::TransactionErr> { Ok(self.store()?) }
-    #[inline]
-    fn rollback_transaction(&mut self) { unreachable!() }
-}
-
-impl IndexProvider for MemIndex {}
-
-impl IndexReadProvider for MemIndex {
-    type Error = Infallible;
-
-    fn contracts_assigning(
-        &self,
-        outpoints: BTreeSet<Outpoint>,
-    ) -> Result<impl Iterator<Item = ContractId> + '_, Self::Error> {
-        Ok(self
-            .contract_index
-            .iter()
-            .flat_map(move |(contract_id, index)| {
-                outpoints.clone().into_iter().filter_map(|outpoint| {
-                    if index
-                        .outpoint_opouts
-                        .keys()
-                        .any(|seal| seal.to_outpoint() == outpoint)
-                    {
-                        Some(*contract_id)
-                    } else {
-                        None
-                    }
-                })
-            }))
-    }
-
-    fn public_opouts(
-        &self,
-        contract_id: ContractId,
-    ) -> Result<BTreeSet<Opout>, IndexReadError<Self::Error>> {
-        let index = self
-            .contract_index
-            .get(&contract_id)
-            .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
-        Ok(index.public_opouts.to_unconfined())
-    }
-
-    fn opouts_by_outputs(
-        &self,
-        contract_id: ContractId,
-        outpoints: impl IntoIterator<Item = impl Into<Outpoint>>,
-    ) -> Result<BTreeSet<Opout>, IndexReadError<Self::Error>> {
-        let index = self
-            .contract_index
-            .get(&contract_id)
-            .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
-        let mut opouts = BTreeSet::new();
-        for output in outpoints.into_iter().map(|o| o.into()) {
-            let set = index
-                .outpoint_opouts
-                .iter()
-                .find(|(seal, _)| seal.to_outpoint() == output)
-                .map(|(_, set)| set.to_unconfined())
-                .ok_or(IndexInconsistency::OutpointUnknown(output, contract_id))?;
-            opouts.extend(set)
-        }
-        Ok(opouts)
-    }
-
-    fn opouts_by_terminals(
-        &self,
-        terminals: impl IntoIterator<Item = SecretSeal>,
-    ) -> Result<BTreeSet<Opout>, Self::Error> {
-        let terminals = terminals.into_iter().collect::<BTreeSet<_>>();
-        Ok(self
-            .terminal_index
-            .iter()
-            .filter(|(seal, _)| terminals.contains(*seal))
-            .flat_map(|(_, opout)| opout.iter())
-            .copied()
-            .collect())
-    }
-
-    fn bundle_id_for_op(&self, opid: OpId) -> Result<BundleId, IndexReadError<Self::Error>> {
-        self.op_bundle_index
-            .get(&opid)
-            .copied()
-            .ok_or(IndexInconsistency::BundleAbsent(opid).into())
-    }
-
-    fn bundle_ids_children_of_op(
-        &self,
-        opid: OpId,
-    ) -> Result<SmallOrdSet<BundleId>, IndexReadError<Self::Error>> {
-        self.op_bundle_children_index
-            .get(&opid)
-            .ok_or(IndexInconsistency::BundleAbsent(opid).into())
-            .cloned()
-    }
-
-    fn bundle_info(
-        &self,
-        bundle_id: BundleId,
-    ) -> Result<(impl Iterator<Item = Txid>, ContractId), IndexReadError<Self::Error>> {
-        let witness_id = self
-            .bundle_witness_index
-            .get(&bundle_id)
-            .ok_or(IndexInconsistency::BundleWitnessUnknown(bundle_id))?;
-        let contract_id = self
-            .bundle_contract_index
-            .get(&bundle_id)
-            .ok_or(IndexInconsistency::BundleContractUnknown(bundle_id))?;
-        Ok((witness_id.iter().cloned(), *contract_id))
-    }
-}
-
-impl IndexWriteProvider for MemIndex {
-    type Error = MemError;
-
-    fn register_contract(&mut self, contract_id: ContractId) -> Result<bool, Self::Error> {
-        if !self.contract_index.contains_key(&contract_id) {
-            self.contract_index.insert(contract_id, empty!())?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn register_bundle(
-        &mut self,
-        bundle_id: BundleId,
-        witness_id: Txid,
-        contract_id: ContractId,
-    ) -> Result<bool, IndexWriteError<Self::Error>> {
-        if let Some(alt) = self
-            .bundle_contract_index
-            .get(&bundle_id)
-            .filter(|alt| *alt != &contract_id)
-        {
-            return Err(IndexInconsistency::DistinctBundleContract {
-                bundle_id,
-                present: *alt,
-                expected: contract_id,
-            }
-            .into());
-        }
-        self.bundle_witness_index
-            .entry(bundle_id)?
-            .or_default()
-            .push(witness_id)?;
-        let present2 = self
-            .bundle_contract_index
-            .insert(bundle_id, contract_id)?
-            .is_some();
-        Ok(!present2)
-    }
-
-    fn register_operation(
-        &mut self,
-        opid: OpId,
-        bundle_id: BundleId,
-    ) -> Result<bool, IndexWriteError<Self::Error>> {
-        if let Some(alt) = self
-            .op_bundle_index
-            .get(&opid)
-            .filter(|alt| *alt != &bundle_id)
-        {
-            return Err(IndexInconsistency::DistinctBundleOp {
-                opid,
-                present: *alt,
-                expected: bundle_id,
-            }
-            .into());
-        }
-        let present = self.op_bundle_index.insert(opid, bundle_id)?.is_some();
-        Ok(!present)
-    }
-
-    fn register_spending(
-        &mut self,
-        opid: OpId,
-        bundle_id: BundleId,
-    ) -> Result<bool, IndexWriteError<Self::Error>> {
-        let mut present = false;
-        match self.op_bundle_children_index.get_mut(&opid) {
-            Some(opids) => {
-                present = true;
-                opids.push(bundle_id)?;
-            }
-            None => {
-                self.op_bundle_children_index
-                    .insert(opid, small_bset!(bundle_id))?;
-            }
-        }
-        Ok(present)
-    }
-
-    fn index_genesis_assignments<State: ExposedState>(
-        &mut self,
-        contract_id: ContractId,
-        vec: &[Assign<State, GenesisSeal>],
-        opid: OpId,
-        type_id: AssignmentType,
-    ) -> Result<(), IndexWriteError<Self::Error>> {
-        let index = self
-            .contract_index
-            .get_mut(&contract_id)
-            .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
-
-        for (no, assign) in vec.iter().enumerate() {
-            let opout = Opout::new(opid, type_id, no as u16);
-            if let Some(seal) = assign.revealed_seal() {
-                let output = seal
-                    .to_output_seal()
-                    .expect("genesis seals always have outpoint");
-                match index.outpoint_opouts.get_mut(&output) {
-                    Some(opouts) => {
-                        opouts.push(opout)?;
-                    }
-                    None => {
-                        index.outpoint_opouts.insert(output, medium_bset!(opout))?;
-                    }
-                }
-            }
-        }
-
-        // We need two cycles due to the borrow checker
-        self.extend_terminals(vec, opid, type_id)
-    }
-
-    fn index_transition_assignments<State: ExposedState>(
-        &mut self,
-        contract_id: ContractId,
-        vec: &[Assign<State, GraphSeal>],
-        opid: OpId,
-        type_id: AssignmentType,
-        witness_id: Txid,
-    ) -> Result<(), IndexWriteError<Self::Error>> {
-        let index = self
-            .contract_index
-            .get_mut(&contract_id)
-            .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
-
-        for (no, assign) in vec.iter().enumerate() {
-            let opout = Opout::new(opid, type_id, no as u16);
-            if let Some(seal) = assign.revealed_seal() {
-                let output = seal.to_output_seal_or_default(witness_id);
-                match index.outpoint_opouts.get_mut(&output) {
-                    Some(opouts) => {
-                        opouts.push(opout)?;
-                    }
-                    None => {
-                        index.outpoint_opouts.insert(output, medium_bset!(opout))?;
-                    }
-                }
-            }
-        }
-
-        // We need two cycles due to the borrow checker
-        self.extend_terminals(vec, opid, type_id)
-    }
-}
-
-impl MemIndex {
-    fn extend_terminals<State: ExposedState, Seal: ExposedSeal>(
-        &mut self,
-        vec: &[Assign<State, Seal>],
-        opid: OpId,
-        type_id: AssignmentType,
-    ) -> Result<(), IndexWriteError<MemError>> {
-        for (no, assign) in vec.iter().enumerate() {
-            let opout = Opout::new(opid, type_id, no as u16);
-            if let BuilderSeal::Concealed(seal) = assign.seal {
-                self.add_terminal(seal, opout)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn add_terminal(
-        &mut self,
-        seal: SecretSeal,
-        opout: Opout,
-    ) -> Result<(), IndexWriteError<MemError>> {
-        match self
-            .terminal_index
-            .remove(&seal)
-            .expect("can have zero elements")
-        {
-            Some(mut existing_opouts) => {
-                existing_opouts.push(opout)?;
-                let _ = self.terminal_index.insert(seal, existing_opouts);
-            }
-            None => {
-                self.terminal_index.insert(seal, medium_bset![opout])?;
-            }
-        }
-        Ok(())
     }
 }

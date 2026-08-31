@@ -24,7 +24,6 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use amplify::confinement::{self, SmallOrdSet};
-use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::bitcoin::{OutPoint as Outpoint, Txid};
 use rgb::{
     Assign, AssignmentType, BundleId, ContractId, ExposedState, Genesis, GenesisSeal, GraphSeal,
@@ -127,14 +126,6 @@ pub enum IndexInconsistency {
 #[derive(Debug)]
 pub struct Index<P: IndexProvider> {
     provider: P,
-}
-
-impl<P: IndexProvider> CloneNoPersistence for Index<P> {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            provider: self.provider.clone_no_persistence(),
-        }
-    }
 }
 
 impl<P: IndexProvider> Default for Index<P>
@@ -249,7 +240,7 @@ impl<P: IndexProvider> Index<P> {
     pub(super) fn contracts_assigning(
         &self,
         outputs: BTreeSet<Outpoint>,
-    ) -> Result<impl Iterator<Item = ContractId> + '_, IndexError<P>> {
+    ) -> Result<BTreeSet<ContractId>, IndexError<P>> {
         self.provider
             .contracts_assigning(outputs)
             .map_err(IndexError::ReadProvider)
@@ -293,7 +284,7 @@ impl<P: IndexProvider> Index<P> {
     pub(super) fn bundle_info(
         &self,
         bundle_id: BundleId,
-    ) -> Result<(impl Iterator<Item = Txid> + '_, ContractId), IndexError<P>> {
+    ) -> Result<(BTreeSet<Txid>, ContractId), IndexError<P>> {
         Ok(self.provider.bundle_info(bundle_id)?)
     }
 }
@@ -316,18 +307,16 @@ impl<P: IndexProvider> StoreTransaction for Index<P> {
     fn rollback_transaction(&mut self) { self.provider.rollback_transaction() }
 }
 
-pub trait IndexProvider:
-    Debug + CloneNoPersistence + Persisting + IndexReadProvider + IndexWriteProvider
-{
-}
+pub trait IndexProvider: Debug + IndexReadProvider + IndexWriteProvider {}
 
+// TODO: is it ok to force eagerness here?
 pub trait IndexReadProvider {
     type Error: Clone + Eq + Error;
 
     fn contracts_assigning(
         &self,
         outputs: BTreeSet<Outpoint>,
-    ) -> Result<impl Iterator<Item = ContractId> + '_, Self::Error>;
+    ) -> Result<BTreeSet<ContractId>, Self::Error>;
 
     fn public_opouts(
         &self,
@@ -355,11 +344,19 @@ pub trait IndexReadProvider {
     fn bundle_info(
         &self,
         bundle_id: BundleId,
-    ) -> Result<(impl Iterator<Item = Txid>, ContractId), IndexReadError<Self::Error>>;
+    ) -> Result<(BTreeSet<Txid>, ContractId), IndexReadError<Self::Error>>;
 }
 
-pub trait IndexWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
+pub trait IndexWriteProvider {
     type Error: Error;
+
+    /// Begins a storage transaction. Default is a no-op; see
+    /// [`StashWriteProvider::begin_transaction`](super::StashWriteProvider::begin_transaction).
+    fn begin_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Commits the storage transaction (default no-op).
+    fn commit_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Rolls back the storage transaction (default no-op).
+    fn rollback_transaction(&mut self) {}
 
     fn register_contract(&mut self, contract_id: ContractId) -> Result<bool, Self::Error>;
 

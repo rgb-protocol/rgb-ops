@@ -23,10 +23,11 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 use amplify::confinement::U32 as U32MAX;
-use nonasync::persistence::{PersistenceError, PersistenceProvider};
-use strict_encoding::{StrictDeserialize, StrictSerialize};
+use strict_encoding::{DeserializeError, StrictDeserialize};
 
-use crate::persistence::{MemIndex, MemStash, MemState};
+#[cfg(feature = "legacy")]
+use crate::persistence::MemStashV0;
+use crate::persistence::{MemIndex, MemState};
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct FsBinStore {
@@ -52,42 +53,18 @@ impl FsBinStore {
             index,
         })
     }
-}
-impl PersistenceProvider<MemStash> for FsBinStore {
-    fn load(&self) -> Result<MemStash, PersistenceError> {
-        MemStash::strict_deserialize_from_file::<U32MAX>(&self.stash)
-            .map_err(PersistenceError::with)
+
+    /// Deserializes `stash.dat` using the legacy v0 stash layout.
+    #[cfg(feature = "legacy")]
+    pub fn load_stash_v0(&self) -> Result<MemStashV0, DeserializeError> {
+        MemStashV0::strict_deserialize_from_file::<U32MAX>(&self.stash)
     }
 
-    fn store(&self, object: &MemStash) -> Result<(), PersistenceError> {
-        object
-            .strict_serialize_to_file::<U32MAX>(&self.stash)
-            .map_err(PersistenceError::with)
-    }
-}
-
-impl PersistenceProvider<MemState> for FsBinStore {
-    fn load(&self) -> Result<MemState, PersistenceError> {
+    pub fn load_state(&self) -> Result<MemState, DeserializeError> {
         MemState::strict_deserialize_from_file::<U32MAX>(&self.state)
-            .map_err(PersistenceError::with)
     }
 
-    fn store(&self, object: &MemState) -> Result<(), PersistenceError> {
-        object
-            .strict_serialize_to_file::<U32MAX>(&self.state)
-            .map_err(PersistenceError::with)
-    }
-}
-
-impl PersistenceProvider<MemIndex> for FsBinStore {
-    fn load(&self) -> Result<MemIndex, PersistenceError> {
+    pub fn load_index(&self) -> Result<MemIndex, DeserializeError> {
         MemIndex::strict_deserialize_from_file::<U32MAX>(&self.index)
-            .map_err(PersistenceError::with)
-    }
-
-    fn store(&self, object: &MemIndex) -> Result<(), PersistenceError> {
-        object
-            .strict_serialize_to_file::<U32MAX>(&self.index)
-            .map_err(PersistenceError::with)
     }
 }

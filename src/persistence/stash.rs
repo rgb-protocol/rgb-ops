@@ -25,7 +25,6 @@ use std::fmt::Debug;
 
 use aluvm::library::{Lib, LibId};
 use amplify::ByteArray;
-use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::commit_verify::mpc::{self, MerkleBlock};
 use rgb::dbc::tapret::TapretCommitment;
 use rgb::seals::txout::CloseMethod;
@@ -109,10 +108,6 @@ pub enum StashInconsistency {
 
     /// bundle {0} is absent.
     BundleAbsent(BundleId),
-
-    /// none of known anchors contain information on bundle {0} under contract
-    /// {1}.
-    BundleMissedInAnchors(BundleId, ContractId),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]
@@ -146,14 +141,6 @@ pub struct Stash<P: StashProvider> {
     provider: P,
 }
 
-impl<P: StashProvider> CloneNoPersistence for Stash<P> {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            provider: self.provider.clone_no_persistence(),
-        }
-    }
-}
-
 impl<P: StashProvider> Default for Stash<P>
 where P: Default
 {
@@ -173,23 +160,27 @@ impl<P: StashProvider> Stash<P> {
     #[doc(hidden)]
     pub(super) fn as_provider_mut(&mut self) -> &mut P { &mut self.provider }
 
-    pub(super) fn schemata(&self) -> Result<impl Iterator<Item = &Schema> + '_, StashError<P>> {
-        self.provider.schemata().map_err(StashError::ReadProvider)
+    pub(super) fn schemata(&self) -> impl Iterator<Item = Result<Schema, StashError<P>>> + '_ {
+        self.provider
+            .schemata()
+            .map(|r| r.map_err(StashError::ReadProvider))
     }
-    pub(super) fn schema(&self, schema_id: SchemaId) -> Result<&Schema, StashError<P>> {
+    pub(super) fn schema(&self, schema_id: SchemaId) -> Result<Schema, StashError<P>> {
         Ok(self.provider.schema(schema_id)?)
     }
 
-    pub(super) fn geneses(&self) -> Result<impl Iterator<Item = &Genesis> + '_, StashError<P>> {
-        self.provider.geneses().map_err(StashError::ReadProvider)
+    pub(super) fn geneses(&self) -> impl Iterator<Item = Result<Genesis, StashError<P>>> + '_ {
+        self.provider
+            .geneses()
+            .map(|r| r.map_err(StashError::ReadProvider))
     }
-    pub(super) fn genesis(&self, contract_id: ContractId) -> Result<&Genesis, StashError<P>> {
+    pub(super) fn genesis(&self, contract_id: ContractId) -> Result<Genesis, StashError<P>> {
         Ok(self.provider.genesis(contract_id)?)
     }
-    pub(super) fn bundle(&self, bundle_id: BundleId) -> Result<&TransitionBundle, StashError<P>> {
+    pub(super) fn bundle(&self, bundle_id: BundleId) -> Result<TransitionBundle, StashError<P>> {
         Ok(self.provider.bundle(bundle_id)?)
     }
-    pub(super) fn witness(&self, witness_id: Txid) -> Result<&SealWitness, StashError<P>> {
+    pub(super) fn witness(&self, witness_id: Txid) -> Result<SealWitness, StashError<P>> {
         Ok(self.provider.witness(witness_id)?)
     }
 
@@ -216,7 +207,7 @@ impl<P: StashProvider> Stash<P> {
             }
             let lib = self.provider.lib(id)?;
             queue.extend(lib.libs.iter().copied());
-            scripts.insert(id, lib.clone());
+            scripts.insert(id, lib);
         }
         let scripts = Scripts::try_from(scripts)
             .map_err(|_| StashDataError::TooManyLibs(schema.schema_id()))?;
@@ -230,7 +221,7 @@ impl<P: StashProvider> Stash<P> {
     /// the rules are reassembled - and re-checked - on each call.
     pub(super) fn schema_rules(&self, schema_id: SchemaId) -> Result<SchemaRules, StashError<P>> {
         let schema = self.schema(schema_id)?;
-        let (types, scripts) = self.extract(schema)?;
+        let (types, scripts) = self.extract(&schema)?;
         SchemaRules::with(schema.clone(), types, scripts)
             .map_err(|e| StashDataError::SchemaDef(schema_id, Box::new(e)).into())
     }
@@ -331,8 +322,7 @@ impl<P: StashProvider> Stash<P> {
         let contract_id = consignment.contract_id();
 
         let genesis = match self.genesis(contract_id) {
-            Ok(g) => {
-                let mut g = g.clone();
+            Ok(mut g) => {
                 g.merge_reveal(&consignment.genesis)?;
                 g
             }
@@ -384,7 +374,7 @@ impl<P: StashProvider> Stash<P> {
     /// it costs nothing: [`super::Stock::update_witnesses`] discards the stored proof as
     /// soon as it sees the reorg, and the next retrieval replaces it.
     pub(crate) fn consume_witness(&mut self, witness: &SealWitness) -> Result<bool, StashError<P>> {
-        let witness = match self.provider.witness(witness.witness_id()).cloned() {
+        let witness = match self.provider.witness(witness.witness_id()) {
             Ok(mut w) => {
                 let mut incoming = witness.clone();
                 if w.spv_proof.is_some() {
@@ -429,9 +419,8 @@ impl<P: StashProvider> Stash<P> {
         &mut self,
         bundle: TransitionBundle,
     ) -> Result<bool, StashError<P>> {
-        let bundle = match self.provider.bundle(bundle.bundle_id()).cloned() {
-            Ok(b) => {
-                let mut b = b.clone();
+        let bundle = match self.provider.bundle(bundle.bundle_id()) {
+            Ok(mut b) => {
                 b.merge_reveal(&bundle)?;
                 b
             }
@@ -472,43 +461,46 @@ impl<P: StashProvider> StoreTransaction for Stash<P> {
     fn rollback_transaction(&mut self) { self.provider.rollback_transaction() }
 }
 
-pub trait StashProvider:
-    Debug + CloneNoPersistence + Persisting + StashReadProvider + StashWriteProvider
-{
-}
+pub trait StashProvider: Debug + StashReadProvider + StashWriteProvider {}
 
 pub trait StashReadProvider {
     /// Error type which must indicate problems on data retrieval.
     type Error: Clone + Eq + Error;
 
-    fn type_system(&self) -> Result<&TypeSystem, Self::Error>;
-    fn lib(&self, id: LibId) -> Result<&Lib, ProviderError<Self::Error>>;
+    fn type_system(&self) -> Result<TypeSystem, Self::Error>;
+    fn lib(&self, id: LibId) -> Result<Lib, ProviderError<Self::Error>>;
 
-    fn schemata(&self) -> Result<impl Iterator<Item = &Schema>, Self::Error>;
-    fn schema(&self, schema_id: SchemaId) -> Result<&Schema, ProviderError<Self::Error>>;
-    fn geneses(&self) -> Result<impl Iterator<Item = &Genesis>, Self::Error>;
-    fn genesis(&self, contract_id: ContractId) -> Result<&Genesis, ProviderError<Self::Error>>;
+    fn schemata(&self) -> impl Iterator<Item = Result<Schema, Self::Error>> + '_;
+    fn schema(&self, schema_id: SchemaId) -> Result<Schema, ProviderError<Self::Error>>;
+    fn geneses(&self) -> impl Iterator<Item = Result<Genesis, Self::Error>> + '_;
+    fn genesis(&self, contract_id: ContractId) -> Result<Genesis, ProviderError<Self::Error>>;
 
     fn contract_schema(
         &self,
         contract_id: ContractId,
-    ) -> Result<&Schema, ProviderError<Self::Error>> {
-        let genesis = self.genesis(contract_id)?;
-        self.schema(genesis.schema_id)
-    }
+    ) -> Result<Schema, ProviderError<Self::Error>>;
 
-    fn witness_ids(&self) -> Result<impl Iterator<Item = Txid>, Self::Error>;
     fn bundle_ids(&self) -> Result<impl Iterator<Item = BundleId>, Self::Error>;
-    fn bundle(&self, bundle_id: BundleId) -> Result<&TransitionBundle, ProviderError<Self::Error>>;
-    fn witness(&self, witness_id: Txid) -> Result<&SealWitness, ProviderError<Self::Error>>;
+    fn bundle(&self, bundle_id: BundleId) -> Result<TransitionBundle, ProviderError<Self::Error>>;
+    fn witness_ids(&self) -> Result<impl Iterator<Item = Txid>, Self::Error>;
+    fn witness(&self, witness_id: Txid) -> Result<SealWitness, ProviderError<Self::Error>>;
 
     fn taprets(&self) -> Result<impl Iterator<Item = (Txid, TapretCommitment)>, Self::Error>;
     fn seal_secret(&self, secret: SecretSeal) -> Result<Option<GraphSeal>, Self::Error>;
     fn secret_seals(&self) -> Result<impl Iterator<Item = GraphSeal>, Self::Error>;
 }
 
-pub trait StashWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
+pub trait StashWriteProvider {
     type Error: Error;
+
+    /// Begins a storage transaction. Default is a no-op: backends that manage
+    /// their own transactions (or are folded into a host transaction) need not
+    /// override it; the SQLite backend overrides it with a real `BEGIN`.
+    fn begin_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Commits the storage transaction (default no-op; see [`Self::begin_transaction`]).
+    fn commit_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Rolls back the storage transaction (default no-op; see [`Self::begin_transaction`]).
+    fn rollback_transaction(&mut self) {}
 
     fn replace_schema(&mut self, schema: Schema) -> Result<bool, Self::Error>;
     fn replace_genesis(&mut self, genesis: Genesis) -> Result<bool, Self::Error>;

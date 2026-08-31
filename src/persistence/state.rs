@@ -20,11 +20,11 @@
 // limitations under the License.
 
 use std::borrow::Borrow;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Debug;
 
-use amplify::confinement::{LargeOrdMap, LargeOrdSet};
-use nonasync::persistence::{CloneNoPersistence, Persisting};
+use amplify::confinement::LargeOrdSet;
 use rgb::validation::{ResolveWitness, WitnessOrdProvider, WitnessResolverError};
 use rgb::vm::{ContractStateAccess, WitnessOrd};
 use rgb::{
@@ -76,14 +76,6 @@ pub struct State<P: StateProvider> {
     provider: P,
 }
 
-impl<P: StateProvider> CloneNoPersistence for State<P> {
-    fn clone_no_persistence(&self) -> Self {
-        Self {
-            provider: self.provider.clone_no_persistence(),
-        }
-    }
-}
-
 impl<P: StateProvider> Default for State<P>
 where P: Default
 {
@@ -117,13 +109,14 @@ impl<P: StateProvider> State<P> {
         &self,
         witness_ids: impl IntoIterator<Item = impl Borrow<Txid>>,
     ) -> Result<(Txid, WitnessOrd), StateError<P>> {
-        let witnesses = self.as_provider().witnesses();
         let mut best_candidate = None;
         for id in witness_ids {
             let id = *id.borrow();
-            let Some(&ord) = witnesses.get(&id) else {
-                return Err(StateError::Inconsistency(StateInconsistency::AbsentWitness(id)));
-            };
+            let ord = self
+                .as_provider()
+                .witness_ord(id)
+                .map_err(StateError::ReadProvider)?
+                .ok_or(StateInconsistency::AbsentWitness(id))?;
             best_candidate = match best_candidate {
                 Some((_, curr_ord)) if ord < curr_ord => Some((id, ord)),
                 None => Some((id, ord)),
@@ -227,30 +220,37 @@ impl<P: StateProvider> StoreTransaction for State<P> {
     fn rollback_transaction(&mut self) { self.provider.rollback_transaction() }
 }
 
-pub trait StateProvider:
-    Debug + CloneNoPersistence + Persisting + StateReadProvider + StateWriteProvider
-{
-}
+pub trait StateProvider: Debug + StateReadProvider + StateWriteProvider {}
 
 pub trait StateReadProvider {
     type ContractRead<'a>: ContractStateRead
     where Self: 'a;
     type Error: Clone + Eq + Error;
 
+    // FIXME: this should be reconsidered in a db context, very inefficient
     fn contract_state(
         &self,
         contract_id: ContractId,
     ) -> Result<Self::ContractRead<'_>, Self::Error>;
 
-    fn witnesses(&self) -> LargeOrdMap<Txid, WitnessOrd>;
+    fn witness_ord(&self, id: Txid) -> Result<Option<WitnessOrd>, Self::Error>;
+    fn all_witness_ords(&self) -> Result<BTreeMap<Txid, WitnessOrd>, Self::Error>;
 
-    fn invalid_ops(&self) -> LargeOrdSet<OpId>;
+    fn invalid_ops(&self) -> Result<LargeOrdSet<OpId>, Self::Error>;
 }
 
-pub trait StateWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
+pub trait StateWriteProvider {
     type ContractWrite<'a>: ContractStateWrite<Error = Self::Error>
     where Self: 'a;
     type Error: Error;
+
+    /// Begins a storage transaction. Default is a no-op; see
+    /// [`StashWriteProvider::begin_transaction`](super::StashWriteProvider::begin_transaction).
+    fn begin_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Commits the storage transaction (default no-op).
+    fn commit_transaction(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    /// Rolls back the storage transaction (default no-op).
+    fn rollback_transaction(&mut self) {}
 
     fn register_contract(
         &mut self,
@@ -273,12 +273,20 @@ pub trait StateWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
 }
 
 pub trait ContractStateRead: ContractStateAccess {
+    type Error: Error;
+
     fn contract_id(&self) -> ContractId;
     fn schema_id(&self) -> SchemaId;
     fn witness_ord(&self, witness_id: Txid) -> Option<WitnessOrd>;
-    fn rights_all(&self) -> impl Iterator<Item = &OutputAssignment<VoidState>>;
-    fn fungible_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedValue>>;
-    fn data_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedData>>;
+    fn rights_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<VoidState>, Self::Error>> + '_;
+    fn fungible_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<RevealedValue>, Self::Error>> + '_;
+    fn data_all(
+        &self,
+    ) -> impl Iterator<Item = Result<OutputAssignment<RevealedData>, Self::Error>> + '_;
 }
 
 pub trait ContractStateWrite {

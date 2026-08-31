@@ -21,6 +21,7 @@
 
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::error::Error;
 
 use invoice::{Allocation, Amount};
 use rgb::bitcoin::OutPoint as Outpoint;
@@ -271,9 +272,9 @@ impl<S: ContractStateRead> ContractData<S> {
             })
     }
 
-    fn extract_state<'c, A, U>(
+    fn extract_state<'c, A, U, E: Error>(
         &'c self,
-        state: impl IntoIterator<Item = &'c OutputAssignment<A>> + 'c,
+        state: impl IntoIterator<Item = Result<OutputAssignment<A>, E>> + 'c,
         type_id: AssignmentType,
         filter: impl AssignmentsFilter + 'c,
     ) -> Result<impl Iterator<Item = OutputAssignment<U>> + 'c, ContractError>
@@ -286,9 +287,9 @@ impl<S: ContractStateRead> ContractData<S> {
             .filter(move |outp| filter.should_include(outp.seal, outp.witness)))
     }
 
-    fn extract_state_unfiltered<'c, A, U>(
+    fn extract_state_unfiltered<'c, A, U, E: Error>(
         &'c self,
-        state: impl IntoIterator<Item = &'c OutputAssignment<A>> + 'c,
+        state: impl IntoIterator<Item = Result<OutputAssignment<A>, E>> + 'c,
         type_id: AssignmentType,
     ) -> Result<impl Iterator<Item = OutputAssignment<U>> + 'c, ContractError>
     where
@@ -297,8 +298,8 @@ impl<S: ContractStateRead> ContractData<S> {
     {
         Ok(state
             .into_iter()
+            .map(|r| r.expect("state read failure"))
             .filter(move |outp| outp.opout.ty == type_id)
-            .cloned()
             .map(OutputAssignment::<A>::transmute))
     }
 
@@ -357,9 +358,9 @@ impl<S: ContractStateRead> ContractData<S> {
         &'c self,
         filter: impl AssignmentsFilter + Copy + 'c,
     ) -> impl Iterator<Item = OwnedAllocation> + 'c {
-        fn f<'a, S, U>(
+        fn f<'a, S, U, E: Error>(
             filter: impl AssignmentsFilter + 'a,
-            state: impl IntoIterator<Item = &'a OutputAssignment<S>> + 'a,
+            state: impl IntoIterator<Item = Result<OutputAssignment<S>, E>> + 'a,
         ) -> impl Iterator<Item = OutputAssignment<U>> + 'a
         where
             S: Clone + KnownState + 'a,
@@ -367,8 +368,8 @@ impl<S: ContractStateRead> ContractData<S> {
         {
             state
                 .into_iter()
+                .map(|r| r.expect("state read failure"))
                 .filter(move |outp| filter.should_include(outp.seal, outp.witness))
-                .cloned()
                 .map(OutputAssignment::<S>::transmute)
         }
 
@@ -396,7 +397,12 @@ impl<S: ContractStateRead> ContractData<S> {
             .collect()
     }
 
-    fn operations<'c, T: KnownState + 'c, I: Iterator<Item = &'c OutputAssignment<T>>>(
+    fn operations<
+        'c,
+        T: KnownState + 'c,
+        E: Error,
+        I: Iterator<Item = Result<OutputAssignment<T>, E>> + 'c,
+    >(
         &'c self,
         state: impl Fn(&'c S) -> I,
         filter_outpoints: impl AssignmentsFilter,
@@ -407,15 +413,17 @@ impl<S: ContractStateRead> ContractData<S> {
     {
         // get all allocations which ever belonged to this wallet and store them by witness id
         let mut allocations_our_outpoint = state(&self.state)
+            .map(|r| r.expect("state read failure"))
             .filter(move |outp| filter_outpoints.should_include(outp.seal, outp.witness))
             .fold(HashMap::<_, HashSet<_>>::new(), |mut map, a| {
                 map.entry(a.witness)
                     .or_default()
-                    .insert(a.clone().transmute::<AllocatedState>());
+                    .insert(a.transmute::<AllocatedState>());
                 map
             });
         // get all allocations which has a witness transaction belonging to this wallet
         let mut allocations_our_witness = state(&self.state)
+            .map(|r| r.expect("state read failure"))
             .filter(move |outp| filter_witnesses.should_include(outp.seal, outp.witness))
             .fold(HashMap::<_, HashSet<_>>::new(), |mut map, a| {
                 let witness = a.witness.expect(
@@ -423,7 +431,7 @@ impl<S: ContractStateRead> ContractData<S> {
                 );
                 map.entry(witness)
                     .or_default()
-                    .insert(a.clone().transmute::<AllocatedState>());
+                    .insert(a.transmute::<AllocatedState>());
                 map
             });
 

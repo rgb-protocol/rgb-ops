@@ -44,6 +44,7 @@ pub mod info;
 pub use contract::{KnownState, MergeReveal, MergeRevealError, OutputAssignment, WitnessInfo};
 pub use invoice::{Allocation, Amount, CoinAmount, OwnedFraction, Precision, TokenIndex};
 pub use rgb::bitcoin::{OutPoint as Outpoint, Txid};
+pub use rgb::dbc::tapret::TapretCommitment;
 pub use rgb::prelude::*;
 pub use rgb::rgbasm;
 pub use rgbcore;
