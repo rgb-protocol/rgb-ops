@@ -86,6 +86,7 @@ esplora_blocking = [
 ]
 electrum_blocking = [
     "electrum-client",
+    "serde_json",
 ]
 mempool_blocking = [
     "esplora_blocking",
