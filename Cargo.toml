@@ -10,7 +10,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1-rc.11"
+version = "0.11.1"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -23,13 +23,13 @@ license = "Apache-2.0"
 [workspace.dependencies]
 amplify = "=4.8.1"
 nonasync = "=0.1.3"
-rgb-ascii-armor = "1.0.2"
+rgb-ascii-armor = "1.0.4"
 baid64 = "=0.4.1"
 electrum-client = "0.25.0"
 esplora-client = { version = "0.12.1", default-features = false }
-rgb-strict-encoding = "1.0.2"
-rgb-strict-types = "1.0.2"
-rgb-consensus = { version = "0.11.1-rc.11", features = [
+rgb-strict-encoding = "1.0.4"
+rgb-strict-types = "1.0.4"
+rgb-consensus = { version = "0.11.1", features = [
     "stl",
 ] }
 indexmap = "2.14.0"
@@ -62,8 +62,8 @@ esplora-client = { workspace = true, optional = true }
 rgb-strict-encoding = { workspace = true }
 rgb-strict-types = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1-rc.11", path = "invoice" }
-rgb-aluvm = "0.11.1-rc.4"
+rgb-invoicing = { version = "0.11.1", path = "invoice" }
+rgb-aluvm = "0.11.1"
 chrono = "0.4.45"
 rand = "0.9.1"
 serde_crate = { workspace = true, optional = true }
@@ -112,9 +112,3 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.docs.rs]
 features = ["all"]
-
-[patch.crates-io]
-rgb-strict-encoding = { git = "https://github.com/rgb-protocol/rgb-strict-encoding", rev = "7feb0f2" }
-rgb-strict-types = { git = "https://github.com/rgb-protocol/rgb-strict-types", rev = "8dfd921" }
-rgb-aluvm = { git = "https://github.com/rgb-protocol/rgb-aluvm", rev = "536fb55" }
-rgb-consensus = { git = "https://github.com/rgb-protocol/rgb-consensus", rev = "768249aa" }
