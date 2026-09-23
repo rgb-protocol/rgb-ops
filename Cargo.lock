@@ -1088,8 +1088,7 @@ dependencies = [
 [[package]]
 name = "rgb-ascii-armor"
 version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14d91be12a8f72d4b0b0afc4be8ed837649c58229a35ee43fb608c30ade63acd"
+source = "git+https://github.com/rgb-protocol/rgb-ascii-armor?rev=5f2cb5a#5f2cb5a150c63c0dff43f73bad910c68525a57f1"
 dependencies = [
  "amplify",
  "baid64",
