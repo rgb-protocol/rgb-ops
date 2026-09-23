@@ -22,8 +22,7 @@
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io::{self, Read, Write};
 
-use amplify::confinement::U32 as FILE_MAX_LEN;
-use armor::{AsciiArmor, StrictArmor};
+use armor::{AsciiArmor, StrictArmor, ASCII_ARMOR_MAX_LEN};
 use rgb::validation::SchemaDefinition;
 #[cfg(all(feature = "fs", feature = "serde"))]
 use strict_encoding::StrictReader;
@@ -70,7 +69,7 @@ pub trait FileContent: StrictArmor {
             return Err(LoadError::InvalidMagic);
         }
 
-        let reader = StreamReader::new::<FILE_MAX_LEN>(data);
+        let reader = StreamReader::new::<ASCII_ARMOR_MAX_LEN>(data);
         let me = Self::strict_read(reader)?;
 
         Ok(me)
@@ -80,7 +79,7 @@ pub trait FileContent: StrictArmor {
         writer.write_all(&RGB_PREFIX)?;
         writer.write_all(&Self::MAGIC)?;
 
-        let writer = StreamWriter::new::<FILE_MAX_LEN>(writer);
+        let writer = StreamWriter::new::<ASCII_ARMOR_MAX_LEN>(writer);
         self.strict_write(writer)?;
 
         Ok(())
@@ -135,7 +134,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
         file.write_all(&RGB_PREFIX)?;
         file.write_all(&Self::VALID_MAGIC)?;
 
-        let writer = StreamWriter::new::<FILE_MAX_LEN>(&mut file);
+        let writer = StreamWriter::new::<ASCII_ARMOR_MAX_LEN>(&mut file);
         StrictEncode::strict_write(&**self, writer)?;
 
         serde_json::to_writer(&mut file, self.validation_status()).map_err(io::Error::other)?;
@@ -153,7 +152,7 @@ impl<const TRANSFER: bool> ValidConsignment<TRANSFER> {
         }
 
         let consignment = {
-            let stream = StreamReader::new::<FILE_MAX_LEN>(&mut file);
+            let stream = StreamReader::new::<ASCII_ARMOR_MAX_LEN>(&mut file);
             let mut reader = StrictReader::with(stream);
             Consignment::<TRANSFER>::strict_decode(&mut reader)?
         };
@@ -192,7 +191,7 @@ impl UniversalFile {
         if rgb != RGB_PREFIX {
             return Err(LoadError::InvalidMagic);
         }
-        let mut reader = StreamReader::new::<FILE_MAX_LEN>(data);
+        let mut reader = StreamReader::new::<ASCII_ARMOR_MAX_LEN>(data);
         Ok(match magic {
             x if x == SchemaDefinition::MAGIC => SchemaDefinition::strict_read(&mut reader)?.into(),
             x if x == Contract::MAGIC => Contract::strict_read(&mut reader)?.into(),
@@ -210,7 +209,7 @@ impl UniversalFile {
         };
         writer.write_all(&magic)?;
 
-        let writer = StreamWriter::new::<FILE_MAX_LEN>(writer);
+        let writer = StreamWriter::new::<ASCII_ARMOR_MAX_LEN>(writer);
 
         match self {
             UniversalFile::SchemaDefinition(content) => content.strict_write(writer),
