@@ -47,7 +47,7 @@ pub const LIB_ID_RGB_CONTRACT: &str =
 
 /// Strict types id for the library carrying the BFA bridge types.
 pub const LIB_ID_RGB_BRIDGE: &str =
-    "stl:bx8feI2i-~~du3QJ-rHnHMzM-MW9Wv9l-6ght_Hk-1IX0d84#rudolf-common-aurora";
+    "stl:CkWw9P6D-MKXvLbm-xSRhB1r-Zoeo53B-wG1wqLs-p19n3dI#freddie-picture-turtle";
 
 /// Strict types id for the library carrying the burn types.
 pub const LIB_ID_RGB_BURN: &str =
@@ -207,15 +207,16 @@ mod test {
 
     #[test]
     fn bridge_location_strict_val_roundtrip() {
-        use amplify::confinement::TinyString;
+        use std::str::FromStr;
+
         use strict_types::StrictSerialize;
 
-        use crate::stl::BridgeLocation;
+        use crate::stl::{BridgeLocation, EvmAddress, EvmContract};
 
-        let location = BridgeLocation::Evm {
+        let location = BridgeLocation::Evm(EvmContract {
             chain_id: 1,
-            address: TinyString::try_from("0xdeadbeef".to_owned()).unwrap(),
-        };
+            address: EvmAddress::from_str("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+        });
         let serialized = location.to_strict_serialized::<{ usize::MAX }>().unwrap();
 
         let mut builder = SystemBuilder::new();
@@ -235,10 +236,11 @@ mod test {
 
     #[test]
     fn reject_list_location_strict_val_roundtrip() {
-        use amplify::confinement::TinyString;
+        use std::str::FromStr;
+
         use strict_types::StrictSerialize;
 
-        use crate::stl::{RejectListLocation, RejectListUrl};
+        use crate::stl::{EvmAddress, EvmContract, RejectListLocation, RejectListUrl};
 
         let mut builder = SystemBuilder::new();
         for lib in [std_stl(), bitcoin_stl(), rgb_contract_stl(), rgb_bridge_stl()] {
@@ -250,10 +252,11 @@ mod test {
 
         for location in [
             RejectListLocation::Url(RejectListUrl::from("example.xyz/rejectList")),
-            RejectListLocation::Evm {
+            RejectListLocation::Evm(EvmContract {
                 chain_id: 1,
-                address: TinyString::try_from("0xdeadbeef".to_owned()).unwrap(),
-            },
+                address: EvmAddress::from_str("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+                    .unwrap(),
+            }),
         ] {
             let serialized = location.to_strict_serialized::<{ usize::MAX }>().unwrap();
             let strict_val = types
@@ -263,6 +266,24 @@ mod test {
                 .clone();
             assert_eq!(RejectListLocation::from_strict_val_unchecked(&strict_val), location);
         }
+    }
+
+    #[test]
+    fn evm_address_display_from_str() {
+        use std::str::FromStr;
+
+        use crate::stl::EvmAddress;
+
+        let lower = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let addr = EvmAddress::from_str(lower).unwrap();
+        assert_eq!(addr.to_string(), lower);
+        assert_eq!(EvmAddress::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(), addr);
+        assert_eq!(
+            EvmAddress::from_str("0xDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef").unwrap(),
+            addr
+        );
+        assert!(EvmAddress::from_str("0x0").is_err());
+        assert!(EvmAddress::from_str("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef00").is_err());
     }
 
     /// Pins `BurnReason::from_strict_val_unchecked` against the type system: the value comes

@@ -27,7 +27,7 @@
 use rgb::validation::{ExternalAnchor, ValidationError};
 use rgb::OpId;
 
-use crate::stl::BridgeLocation;
+use crate::stl::{BridgeLocation, EvmContract};
 
 /// Error resolving an external anchor.
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]
@@ -90,7 +90,7 @@ impl<R: ResolveAnchor> CheckedAnchorResolver<R> {
     /// [`PendingValidation::check_resolver`]: rgb::validation::PendingValidation::check_resolver
     pub fn with(inner: R, location: BridgeLocation) -> Result<Self, AnchorResolverError> {
         match location {
-            BridgeLocation::Evm { chain_id, .. } => {
+            BridgeLocation::Evm(EvmContract { chain_id, .. }) => {
                 let actual = inner.evm_chain_id()?;
                 if actual != chain_id {
                     return Err(AnchorResolverError::WrongChainId {
@@ -114,9 +114,8 @@ impl<R: ResolveAnchor> CheckedAnchorResolver<R> {
 
 #[cfg(test)]
 mod test {
-    use amplify::confinement::TinyString;
-
     use super::*;
+    use crate::stl::EvmAddress;
 
     struct Resolver(u64);
 
@@ -133,10 +132,10 @@ mod test {
     }
 
     fn location(chain_id: u64) -> BridgeLocation {
-        BridgeLocation::Evm {
+        BridgeLocation::Evm(EvmContract {
             chain_id,
-            address: TinyString::try_from("0xdeadbeef".to_owned()).unwrap(),
-        }
+            address: EvmAddress::default(),
+        })
     }
 
     #[test]

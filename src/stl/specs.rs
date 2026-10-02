@@ -22,15 +22,16 @@
 #![allow(unused_braces)] // caused by rustc unable to understand strict_dumb
 
 use std::collections::BTreeMap;
-use std::fmt::{self, Debug, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
 use amplify::ascii::AsciiString;
 use amplify::confinement::{
-    Confined, NonEmptyString, NonEmptyVec, SmallBlob, SmallOrdSet, SmallString, TinyString, U8,
+    Confined, NonEmptyString, NonEmptyVec, SmallBlob, SmallOrdSet, SmallString, U8,
 };
-use amplify::Bytes32;
+use amplify::hex::{self, FromHex};
+use amplify::{Bytes20, Bytes32};
 use invoice::{Precision, TokenIndex};
 use strict_encoding::stl::{Alpha, AlphaNum, AsciiPrintable};
 use strict_encoding::{
@@ -638,21 +639,83 @@ impl RejectListUrl {
     }
 }
 
+/// Address of an account or contract on an EVM-compatible chain.
+///
+/// Displayed as lowercase `0x`-prefixed hex; parsed from hex with or without the `0x` prefix,
+/// in any letter case.
+#[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From)]
+#[wrapper(Deref, BorrowSlice, Hex)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate", transparent)
+)]
+pub struct EvmAddress(
+    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::byte_array"))]
+    Bytes20,
+);
+
+impl StrictSerialize for EvmAddress {}
+impl StrictDeserialize for EvmAddress {}
+
+impl Display for EvmAddress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { write!(f, "0x{}", self.0) }
+}
+
+impl FromStr for EvmAddress {
+    type Err = hex::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s
+            .strip_prefix("0x")
+            .or_else(|| s.strip_prefix("0X"))
+            .unwrap_or(s);
+        Bytes20::from_hex(s).map(Self)
+    }
+}
+
+impl EvmAddress {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        Self(
+            value
+                .unwrap_bytes()
+                .try_into()
+                .expect("invalid EVM address"),
+        )
+    }
+}
+
+/// A smart contract deployed on an EVM-compatible chain.
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE)]
+pub struct EvmContract {
+    /// EIP-155 chain ID of the chain the contract is deployed on.
+    pub chain_id: u64,
+    /// Address of the contract.
+    pub address: EvmAddress,
+}
+
+impl EvmContract {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        let chain_id = value.unwrap_struct("chainId").unwrap_uint::<u64>();
+        let address = EvmAddress::from_strict_val_unchecked(value.unwrap_struct("address"));
+        Self { chain_id, address }
+    }
+}
+
 /// Identifies the location of the bridge smart contract on the external chain.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_BRIDGE, tags = order, dumb = {
-    BridgeLocation::Evm { chain_id: strict_dumb!(), address: strict_dumb!() }
+    BridgeLocation::Evm(strict_dumb!())
 })]
 pub enum BridgeLocation {
-    /// A bridge smart contract deployed on an EVM-compatible chain.
-    Evm {
-        /// EIP-155 chain ID of the chain the bridge contract is deployed on. External-anchor
-        /// resolvers must check it against the chain they are connected to.
-        chain_id: u64,
-        /// Address of the bridge contract.
-        address: TinyString,
-    },
+    /// A bridge smart contract deployed on an EVM-compatible chain. External-anchor resolvers
+    /// must check its chain ID against the chain they are connected to.
+    Evm(EvmContract),
 }
 
 impl StrictSerialize for BridgeLocation {}
@@ -664,10 +727,7 @@ impl BridgeLocation {
         let is_evm = matches!(tag, EnumTag::Ord(0))
             || matches!(tag, EnumTag::Name(ref n) if n.as_str() == "evm");
         if is_evm {
-            let chain_id = content.unwrap_struct("chainId").unwrap_uint::<u64>();
-            let address = TinyString::try_from(content.unwrap_struct("address").unwrap_string())
-                .expect("invalid `bridgeLocation` EVM address string");
-            BridgeLocation::Evm { chain_id, address }
+            BridgeLocation::Evm(EvmContract::from_strict_val_unchecked(content))
         } else {
             panic!("unexpected `BridgeLocation` union tag {tag}");
         }
@@ -684,12 +744,7 @@ pub enum RejectListLocation {
     /// A reject list served at a URL.
     Url(RejectListUrl),
     /// A reject list kept by a smart contract deployed on an EVM-compatible chain.
-    Evm {
-        /// EIP-155 chain ID of the chain the reject list contract is deployed on.
-        chain_id: u64,
-        /// Address of the reject list contract.
-        address: TinyString,
-    },
+    Evm(EvmContract),
 }
 
 impl StrictSerialize for RejectListLocation {}
@@ -705,10 +760,7 @@ impl RejectListLocation {
         if is(0, "url") {
             RejectListLocation::Url(RejectListUrl::from_strict_val_unchecked(content))
         } else if is(1, "evm") {
-            let chain_id = content.unwrap_struct("chainId").unwrap_uint::<u64>();
-            let address = TinyString::try_from(content.unwrap_struct("address").unwrap_string())
-                .expect("invalid `rejectList` EVM address string");
-            RejectListLocation::Evm { chain_id, address }
+            RejectListLocation::Evm(EvmContract::from_strict_val_unchecked(content))
         } else {
             panic!("unexpected `RejectListLocation` union tag {tag}");
         }
