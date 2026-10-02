@@ -674,6 +674,47 @@ impl BridgeLocation {
     }
 }
 
+/// Identifies where the reject list of a BFA contract is published.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE, tags = order, dumb = {
+    RejectListLocation::Url(strict_dumb!())
+})]
+pub enum RejectListLocation {
+    /// A reject list served at a URL.
+    Url(RejectListUrl),
+    /// A reject list kept by a smart contract deployed on an EVM-compatible chain.
+    Evm {
+        /// EIP-155 chain ID of the chain the reject list contract is deployed on.
+        chain_id: u64,
+        /// Address of the reject list contract.
+        address: TinyString,
+    },
+}
+
+impl StrictSerialize for RejectListLocation {}
+impl StrictDeserialize for RejectListLocation {}
+
+impl RejectListLocation {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        let (tag, content) = value.unwrap_union();
+        let is = |ord: u8, name: &str| {
+            matches!(tag, EnumTag::Ord(o) if *o == ord)
+                || matches!(tag, EnumTag::Name(ref n) if n.as_str() == name)
+        };
+        if is(0, "url") {
+            RejectListLocation::Url(RejectListUrl::from_strict_val_unchecked(content))
+        } else if is(1, "evm") {
+            let chain_id = content.unwrap_struct("chainId").unwrap_uint::<u64>();
+            let address = TinyString::try_from(content.unwrap_struct("address").unwrap_string())
+                .expect("invalid `rejectList` EVM address string");
+            RejectListLocation::Evm { chain_id, address }
+        } else {
+            panic!("unexpected `RejectListLocation` union tag {tag}");
+        }
+    }
+}
+
 /// A block number on the external (bridged) chain.
 #[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From)]
 #[wrapper(Deref, Display, FromStr)]

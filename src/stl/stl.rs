@@ -33,8 +33,8 @@ use strict_types::{LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
 
 use super::{
     AssetSpec, AttachmentType, BlockNumber, BridgeLocation, BurnMeta, BurnReason, ContractSpec,
-    ContractTerms, EmbeddedMedia, Error, IssueMeta, MediaType, RejectListUrl, TokenData,
-    LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
+    ContractTerms, EmbeddedMedia, Error, IssueMeta, MediaType, RejectListLocation, RejectListUrl,
+    TokenData, LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
 };
 use crate::containers::{Contract, Transfer};
 use crate::stl::ProofOfReserves;
@@ -47,7 +47,7 @@ pub const LIB_ID_RGB_CONTRACT: &str =
 
 /// Strict types id for the library carrying the BFA bridge types.
 pub const LIB_ID_RGB_BRIDGE: &str =
-    "stl:LARKHTS4-deDTLV4-PN5teYT-DSUMpG3-9yC~KGb-DLBKsNw#package-slogan-invest";
+    "stl:bx8feI2i-~~du3QJ-rHnHMzM-MW9Wv9l-6ght_Hk-1IX0d84#rudolf-common-aurora";
 
 /// Strict types id for the library carrying the burn types.
 pub const LIB_ID_RGB_BURN: &str =
@@ -104,13 +104,18 @@ pub fn rgb_contract_stl() -> TypeLib {
 /// Generates the strict type library of the BFA bridge types.
 ///
 /// Must be included in the `StandardTypes` system of any schema referencing
-/// `"RGBBridge.BridgeLocation"` or `"RGBBridge.BlockNumber"`.
+/// `"RGBBridge.BridgeLocation"`, `"RGBBridge.BlockNumber"` or
+/// `"RGBBridge.RejectListLocation"`.
 pub fn rgb_bridge_stl() -> TypeLib {
-    LibBuilder::with(libname!(LIB_NAME_RGB_BRIDGE), [std_stl().to_dependency_types()])
-        .transpile::<BridgeLocation>()
-        .transpile::<BlockNumber>()
-        .compile()
-        .unwrap()
+    LibBuilder::with(libname!(LIB_NAME_RGB_BRIDGE), [
+        std_stl().to_dependency_types(),
+        rgb_contract_stl().to_dependency_types(),
+    ])
+    .transpile::<BridgeLocation>()
+    .transpile::<BlockNumber>()
+    .transpile::<RejectListLocation>()
+    .compile()
+    .unwrap()
 }
 
 /// Generates the strict type library of the burn types.
@@ -214,7 +219,7 @@ mod test {
         let serialized = location.to_strict_serialized::<{ usize::MAX }>().unwrap();
 
         let mut builder = SystemBuilder::new();
-        for lib in [std_stl(), rgb_bridge_stl()] {
+        for lib in [std_stl(), bitcoin_stl(), rgb_contract_stl(), rgb_bridge_stl()] {
             builder = builder.import(lib).unwrap();
         }
         let sys = builder.finalize().unwrap();
@@ -226,6 +231,38 @@ mod test {
             .as_val()
             .clone();
         assert_eq!(BridgeLocation::from_strict_val_unchecked(&strict_val), location);
+    }
+
+    #[test]
+    fn reject_list_location_strict_val_roundtrip() {
+        use amplify::confinement::TinyString;
+        use strict_types::StrictSerialize;
+
+        use crate::stl::{RejectListLocation, RejectListUrl};
+
+        let mut builder = SystemBuilder::new();
+        for lib in [std_stl(), bitcoin_stl(), rgb_contract_stl(), rgb_bridge_stl()] {
+            builder = builder.import(lib).unwrap();
+        }
+        let sys = builder.finalize().unwrap();
+        let sem_id = *sys.resolve("RGBBridge.RejectListLocation").unwrap();
+        let types = sys.as_types().extract([sem_id]).unwrap();
+
+        for location in [
+            RejectListLocation::Url(RejectListUrl::from("example.xyz/rejectList")),
+            RejectListLocation::Evm {
+                chain_id: 1,
+                address: TinyString::try_from("0xdeadbeef".to_owned()).unwrap(),
+            },
+        ] {
+            let serialized = location.to_strict_serialized::<{ usize::MAX }>().unwrap();
+            let strict_val = types
+                .strict_deserialize_type(sem_id, &serialized)
+                .unwrap()
+                .as_val()
+                .clone();
+            assert_eq!(RejectListLocation::from_strict_val_unchecked(&strict_val), location);
+        }
     }
 
     /// Pins `BurnReason::from_strict_val_unchecked` against the type system: the value comes

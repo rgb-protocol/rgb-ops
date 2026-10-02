@@ -33,7 +33,7 @@ pub use mime::{MediaRegName, MediaType};
 pub use specs::{
     Article, AssetSpec, Attachment, AttachmentName, AttachmentType, BlockNumber, BridgeLocation,
     BurnMeta, BurnReason, ContractSpec, ContractTerms, Details, EmbeddedMedia, IssueMeta, Name,
-    RejectListUrl, RicardianContract, Ticker, TokenData,
+    RejectListLocation, RejectListUrl, RicardianContract, Ticker, TokenData,
 };
 pub use stl::{
     aluvm_stl, bitcoin_stl, commit_verify_stl, rgb_bridge_stl, rgb_burn_stl, rgb_commit_stl,
