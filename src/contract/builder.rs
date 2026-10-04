@@ -21,7 +21,7 @@
 
 #![allow(clippy::result_large_err)]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use amplify::confinement::{Confined, NonEmptyOrdSet, TinyOrdMap, U16};
 use amplify::{confinement, Wrapper};
@@ -443,7 +443,7 @@ pub struct OperationBuilder<Seal: ExposedSeal> {
 
     global: GlobalState,
     meta: Metadata,
-    rights: TinyOrdMap<AssignmentType, Confined<HashSet<BuilderSeal<Seal>>, 1, U16>>,
+    rights: TinyOrdMap<AssignmentType, Confined<BTreeSet<BuilderSeal<Seal>>, 1, U16>>,
     fungible:
         TinyOrdMap<AssignmentType, Confined<BTreeMap<BuilderSeal<Seal>, RevealedValue>, 1, U16>>,
     data: TinyOrdMap<AssignmentType, Confined<BTreeMap<BuilderSeal<Seal>, RevealedData>, 1, U16>>,
