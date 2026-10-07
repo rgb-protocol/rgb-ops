@@ -119,6 +119,7 @@ getrandom = { version = "0.3", features = [
 # only to keep the v0 golden fixtures in asset/legacy_v0 gzipped; they are
 # decompressed into a temp dir by the test which reads them back
 flate2 = "1"
+serde_json = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

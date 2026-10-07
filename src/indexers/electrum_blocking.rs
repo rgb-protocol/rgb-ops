@@ -251,3 +251,77 @@ impl ResolveSpvProof for ElectrumClient {
         })
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use rgb::bitcoin::constants::genesis_block;
+    use rgb::bitcoin::{absolute, transaction, Amount, Network, OutPoint, ScriptBuf, TxIn, TxOut};
+
+    use super::*;
+
+    fn dumb_tx() -> Tx {
+        Tx {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                value: Amount::ZERO,
+                script_pubkey: ScriptBuf::new(),
+            }],
+        }
+    }
+
+    /// Spawns an Electrum server answering the requests `resolve_witness` makes with the given
+    /// tip height and verbose transaction record.
+    fn mock_client(tip_height: u32, tx_details: String) -> ElectrumClient {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Electrum server");
+        let address = listener.local_addr().expect("read mock server address");
+        let header = consensus::encode::serialize_hex(&genesis_block(Network::Regtest).header);
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Electrum connection");
+            let mut writer = stream.try_clone().expect("clone Electrum stream");
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let request: serde_json::Value =
+                    serde_json::from_str(&line).expect("Electrum request is JSON");
+                let result = match request["method"].as_str().expect("request method") {
+                    "server.version" => s!(r#"["mock", "1.4"]"#),
+                    "blockchain.headers.subscribe" => {
+                        format!(r#"{{"height":{tip_height},"hex":"{header}"}}"#)
+                    }
+                    "blockchain.transaction.get" => tx_details.clone(),
+                    method => panic!("unexpected Electrum request {method}"),
+                };
+                writeln!(writer, r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#, request["id"])
+                    .expect("write mock Electrum response");
+            }
+        });
+        ElectrumClient {
+            inner: Client::new(&format!("tcp://{address}")).expect("connect mock Electrum server"),
+        }
+    }
+
+    #[test]
+    fn rejects_more_confirmations_than_tip_height() {
+        let tx = dumb_tx();
+        let txid = tx.compute_txid();
+        let tx_details = format!(
+            r#"{{"hex":"{}","confirmations":200,"blocktime":1231006505}}"#,
+            consensus::encode::serialize_hex(&tx)
+        );
+        let client = mock_client(100, tx_details);
+
+        let error = client
+            .resolve_witness(txid)
+            .expect_err("reject confirmations above the tip height");
+
+        assert_eq!(error, WitnessResolverError::InvalidResolverData);
+    }
+}
