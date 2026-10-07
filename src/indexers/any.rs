@@ -36,6 +36,13 @@ use crate::indexers::{Indexer, ResolveSpvProof};
 /// Generic struct wrapping any implementation of the [`ResolveWitness`] trait.
 /// It also contains a map of the [`Consignment`] TXs, non-empty if `add_consignment_txes` has been
 /// called.
+///
+/// The wrapped indexer is trusted: the witness status it reports (whether a TX is mined, at which
+/// height and time) and the block headers used to check the SPV proofs found in consignments are
+/// taken as given, without verifying proof of work or chain continuity. A malicious or
+/// compromised indexer, or a MITM on a plaintext connection to it, can therefore report an
+/// unbroadcast or double-spent witness as confirmed. Use an indexer you control, or at least
+/// trust, and connect to it over an authenticated transport.
 #[derive(From)]
 #[non_exhaustive]
 pub struct AnyResolver {

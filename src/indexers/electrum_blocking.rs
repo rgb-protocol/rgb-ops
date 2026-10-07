@@ -99,7 +99,9 @@ impl ElectrumClient {
 
         let tip_height =
             u32::try_from(header.height).map_err(|_| WitnessResolverError::InvalidResolverData)?;
-        let height: isize = (tip_height - confirmations) as isize;
+        let height = tip_height
+            .checked_sub(confirmations)
+            .ok_or(WitnessResolverError::InvalidResolverData)? as isize;
         const SAFETY_MARGIN: isize = 1;
         // first check from expected min to max height
         let get_merkle_res = (1..=forward + 1)
