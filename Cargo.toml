@@ -10,7 +10,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.1"
+version = "0.11.2-rc.1"
 authors = ["Zoe Faltibà <zoefaltiba@gmail.com>"]
 homepage = "https://rgb.info"
 repository = "https://github.com/rgb-protocol/rgb-ops"
@@ -62,7 +62,7 @@ esplora-client = { workspace = true, optional = true }
 rgb-strict-encoding = { workspace = true }
 rgb-strict-types = { workspace = true }
 rgb-consensus = { workspace = true }
-rgb-invoicing = { version = "0.11.1", path = "invoice" }
+rgb-invoicing = { version = "0.11.2-rc.1", path = "invoice" }
 rgb-aluvm = "0.11.2-rc.1"
 chrono = "0.4.45"
 serde_crate = { workspace = true, optional = true }
