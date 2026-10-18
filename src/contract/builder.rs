@@ -21,7 +21,7 @@
 
 #![allow(clippy::result_large_err)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use amplify::confinement::{Confined, NonEmptyOrdSet, TinyOrdMap, U16};
 use amplify::{confinement, Wrapper};
@@ -258,7 +258,7 @@ pub struct TransitionBuilder {
     builder: OperationBuilder<GraphSeal>,
     nonce: u64,
     transition_type: TransitionType,
-    inputs: TinyOrdMap<Opout, AllocatedState>,
+    inputs: Confined<BTreeMap<Opout, AllocatedState>, 0, U16>,
 }
 
 impl TransitionBuilder {
@@ -436,16 +436,19 @@ impl TransitionBuilder {
     }
 }
 
+/// Assignments of one type, kept in insertion order; the same seal may appear more than once, as
+/// consensus allows. They get sorted by seal on completion.
+type AssignList<T> = Confined<Vec<T>, 1, U16>;
+
 #[derive(Clone, Debug)]
 pub struct OperationBuilder<Seal: ExposedSeal> {
     schema: Schema,
 
     global: GlobalState,
     meta: Metadata,
-    rights: TinyOrdMap<AssignmentType, Confined<BTreeSet<BuilderSeal<Seal>>, 1, U16>>,
-    fungible:
-        TinyOrdMap<AssignmentType, Confined<BTreeMap<BuilderSeal<Seal>, RevealedValue>, 1, U16>>,
-    data: TinyOrdMap<AssignmentType, Confined<BTreeMap<BuilderSeal<Seal>, RevealedData>, 1, U16>>,
+    rights: TinyOrdMap<AssignmentType, AssignList<BuilderSeal<Seal>>>,
+    fungible: TinyOrdMap<AssignmentType, AssignList<(BuilderSeal<Seal>, RevealedValue)>>,
+    data: TinyOrdMap<AssignmentType, AssignList<(BuilderSeal<Seal>, RevealedData)>>,
     types: TypeSystem,
 }
 
@@ -627,7 +630,7 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
         let seal = seal.into();
         match self.fungible.get_mut(&type_id) {
             Some(assignments) => {
-                assignments.insert(seal, state)?;
+                assignments.push((seal, state))?;
             }
             None => {
                 self.fungible
@@ -662,7 +665,7 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             let seal = seal.into();
             match self.data.get_mut(&type_id) {
                 Some(assignments) => {
-                    assignments.insert(seal, state)?;
+                    assignments.push((seal, state))?;
                 }
                 None => {
                     self.data.insert(type_id, Confined::with((seal, state)))?;
@@ -676,6 +679,8 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
 
     fn complete(self) -> (Schema, GlobalState, Assignments<Seal>, TypeSystem, Metadata) {
         let owned_state = self.fungible.into_iter().map(|(id, vec)| {
+            let mut vec = vec.release();
+            vec.sort_by_key(|(seal, _)| *seal);
             let vec = vec
                 .into_iter()
                 .map(|(seal, value)| Assign { seal, state: value })
@@ -685,6 +690,8 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             (id, state)
         });
         let owned_data = self.data.into_iter().map(|(id, vec)| {
+            let mut vec = vec.release();
+            vec.sort_by_key(|(seal, _)| *seal);
             let vec_data = vec
                 .into_iter()
                 .map(|(seal, value)| Assign { seal, state: value });
@@ -693,6 +700,8 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             (id, state_data)
         });
         let owned_rights = self.rights.into_iter().map(|(id, vec)| {
+            let mut vec = vec.release();
+            vec.sort();
             let vec_data = vec.into_iter().map(|seal| Assign {
                 seal,
                 state: none!(),
@@ -715,5 +724,97 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             .expect("too many assignments");
 
         (self.schema, self.global, assignments, self.types, self.meta)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use amplify::ByteArray;
+    use rgb::{AssignmentDetails, OpId};
+    use strict_encoding::StrictDumb;
+
+    use super::*;
+
+    const FUNGIBLE: AssignmentType = AssignmentType::with(1);
+    const RIGHTS: AssignmentType = AssignmentType::with(2);
+
+    fn builder() -> TransitionBuilder {
+        let mut schema = Schema::strict_dumb();
+        for (ty, owned_state_schema) in [
+            (FUNGIBLE, OwnedStateSchema::Fungible(FungibleType::Unsigned64Bit)),
+            (RIGHTS, OwnedStateSchema::Declarative),
+        ] {
+            let details = AssignmentDetails {
+                owned_state_schema,
+                name: FieldName::strict_dumb(),
+                default_transition: TransitionType::with(0),
+            };
+            schema.owned_types.insert(ty, details).unwrap();
+        }
+        TransitionBuilder::with(
+            ContractId::strict_dumb(),
+            schema,
+            TransitionType::with(0),
+            TypeSystem::default(),
+        )
+    }
+
+    fn seal(vout: u32) -> BuilderSeal<GraphSeal> {
+        BuilderSeal::Revealed(GraphSeal::with_blinded_vout(vout, 0))
+    }
+
+    #[test]
+    fn inputs_up_to_consensus_limit() {
+        let op = OpId::from_byte_array([1; 32]);
+        let mut builder = builder();
+        for no in 0..u16::MAX {
+            builder = builder
+                .add_input(Opout::new(op, FUNGIBLE, no), AllocatedState::Amount(1.into()))
+                .unwrap();
+        }
+        let transition = builder
+            .clone()
+            .add_fungible_state_raw(FUNGIBLE, seal(0), 1u64)
+            .unwrap()
+            .complete_transition()
+            .unwrap();
+        assert_eq!(transition.inputs.len(), u16::MAX as usize);
+
+        let res = builder.add_input(Opout::new(op, RIGHTS, 0), AllocatedState::Void);
+        assert!(matches!(res, Err(BuilderError::Confinement(_))));
+    }
+
+    #[test]
+    fn repeated_seals_are_kept() {
+        let transition = builder()
+            .add_input(
+                Opout::new(OpId::from_byte_array([1; 32]), FUNGIBLE, 0),
+                AllocatedState::Amount(6.into()),
+            )
+            .unwrap()
+            .add_fungible_state_raw(FUNGIBLE, seal(1), 1u64)
+            .unwrap()
+            .add_fungible_state_raw(FUNGIBLE, seal(0), 2u64)
+            .unwrap()
+            .add_fungible_state_raw(FUNGIBLE, seal(1), 3u64)
+            .unwrap()
+            .add_rights_raw(RIGHTS, seal(0))
+            .unwrap()
+            .add_rights_raw(RIGHTS, seal(0))
+            .unwrap()
+            .complete_transition()
+            .unwrap();
+
+        // sorted by seal, repeated seals in insertion order
+        let fungible = transition
+            .assignments
+            .get(&FUNGIBLE)
+            .unwrap()
+            .as_fungible()
+            .iter()
+            .map(|a| (a.seal, a.state.as_u64()))
+            .collect::<Vec<_>>();
+        assert_eq!(fungible, vec![(seal(0), 2), (seal(1), 1), (seal(1), 3)]);
+        assert_eq!(transition.assignments.get(&RIGHTS).unwrap().len_u16(), 2);
     }
 }
