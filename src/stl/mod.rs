@@ -34,7 +34,7 @@ pub use specs::{
     Article, AssetSpec, Attachment, AttachmentName, AttachmentType, BlockNumber, BridgeLocation,
     BurnMeta, BurnReason, ContractSpec, ContractTerms, Details, EmbeddedMedia, EvmAddress,
     EvmContract, IssueMeta, Name, RejectListLocation, RejectListUrl, RicardianContract, Ticker,
-    TokenData,
+    TickerChar, TokenData, UnicodeTicker, UnicodeTickerError,
 };
 pub use stl::{
     aluvm_stl, bitcoin_stl, commit_verify_stl, rgb_bridge_stl, rgb_burn_stl, rgb_commit_stl,

@@ -34,7 +34,7 @@ use strict_types::{LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
 use super::{
     AssetSpec, AttachmentType, BlockNumber, BridgeLocation, BurnMeta, BurnReason, ContractSpec,
     ContractTerms, EmbeddedMedia, Error, IssueMeta, MediaType, RejectListLocation, RejectListUrl,
-    TokenData, LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
+    TokenData, UnicodeTicker, LIB_NAME_RGB_BRIDGE, LIB_NAME_RGB_BURN, LIB_NAME_RGB_CONTRACT,
 };
 use crate::containers::{Contract, Transfer};
 use crate::stl::ProofOfReserves;
@@ -47,7 +47,7 @@ pub const LIB_ID_RGB_CONTRACT: &str =
 
 /// Strict types id for the library carrying the BFA bridge types.
 pub const LIB_ID_RGB_BRIDGE: &str =
-    "stl:CkWw9P6D-MKXvLbm-xSRhB1r-Zoeo53B-wG1wqLs-p19n3dI#freddie-picture-turtle";
+    "stl:sPfYYY5Q-tyYW28b-fWbQ_Wg-_rHdRre-DG15kFV-Kqwete4#owner-oscar-bruno";
 
 /// Strict types id for the library carrying the burn types.
 pub const LIB_ID_RGB_BURN: &str =
@@ -104,8 +104,8 @@ pub fn rgb_contract_stl() -> TypeLib {
 /// Generates the strict type library of the BFA bridge types.
 ///
 /// Must be included in the `StandardTypes` system of any schema referencing
-/// `"RGBBridge.BridgeLocation"`, `"RGBBridge.BlockNumber"` or
-/// `"RGBBridge.RejectListLocation"`.
+/// `"RGBBridge.BridgeLocation"`, `"RGBBridge.BlockNumber"`,
+/// `"RGBBridge.RejectListLocation"` or `"RGBBridge.UnicodeTicker"`.
 pub fn rgb_bridge_stl() -> TypeLib {
     LibBuilder::with(libname!(LIB_NAME_RGB_BRIDGE), [
         std_stl().to_dependency_types(),
@@ -114,6 +114,7 @@ pub fn rgb_bridge_stl() -> TypeLib {
     .transpile::<BridgeLocation>()
     .transpile::<BlockNumber>()
     .transpile::<RejectListLocation>()
+    .transpile::<UnicodeTicker>()
     .compile()
     .unwrap()
 }
@@ -266,6 +267,81 @@ mod test {
                 .clone();
             assert_eq!(RejectListLocation::from_strict_val_unchecked(&strict_val), location);
         }
+    }
+
+    #[test]
+    fn unicode_ticker_strict_val_roundtrip() {
+        use strict_types::StrictSerialize;
+
+        use crate::stl::UnicodeTicker;
+
+        let mut builder = SystemBuilder::new();
+        for lib in [std_stl(), bitcoin_stl(), rgb_contract_stl(), rgb_bridge_stl()] {
+            builder = builder.import(lib).unwrap();
+        }
+        let sys = builder.finalize().unwrap();
+        let sem_id = *sys.resolve("RGBBridge.UnicodeTicker").unwrap();
+        let types = sys.as_types().extract([sem_id]).unwrap();
+
+        for ticker in ["BFA", "₿TC", "ビットコイン", "🦀🦀🦀🦀🦀🦀🦀🦀"] {
+            let ticker = UnicodeTicker::from(ticker);
+            let serialized = ticker.to_strict_serialized::<{ usize::MAX }>().unwrap();
+            let strict_val = types
+                .strict_deserialize_type(sem_id, &serialized)
+                .unwrap()
+                .as_val()
+                .clone();
+            assert_eq!(UnicodeTicker::from_strict_val_unchecked(&strict_val), ticker);
+        }
+    }
+
+    #[test]
+    fn unicode_ticker_char_bounds() {
+        use std::str::FromStr;
+
+        use crate::stl::{UnicodeTicker, UnicodeTickerError};
+
+        assert_eq!(UnicodeTicker::from_str(""), Err(UnicodeTickerError::Empty));
+        assert!(UnicodeTicker::from_str(&"🦀".repeat(8)).is_ok());
+        assert_eq!(UnicodeTicker::from_str(&"a".repeat(9)), Err(UnicodeTickerError::TooLong(9)));
+    }
+
+    /// The type system bounds the ticker by characters: 8 four-byte characters are valid, 9
+    /// one-byte characters are not.
+    #[test]
+    fn unicode_ticker_type_system_bounds() {
+        use std::str::FromStr;
+
+        use strict_types::StrictSerialize;
+
+        use crate::stl::UnicodeTicker;
+
+        let mut builder = SystemBuilder::new();
+        for lib in [std_stl(), bitcoin_stl(), rgb_contract_stl(), rgb_bridge_stl()] {
+            builder = builder.import(lib).unwrap();
+        }
+        let sys = builder.finalize().unwrap();
+        let sem_id = *sys.resolve("RGBBridge.UnicodeTicker").unwrap();
+        let types = sys.as_types().extract([sem_id]).unwrap();
+
+        let ticker = UnicodeTicker::from_str(&"🦀".repeat(8)).unwrap();
+        let serialized = ticker.to_strict_serialized::<{ usize::MAX }>().unwrap();
+        assert_eq!(serialized.len(), 1 + 8 * 4);
+        assert!(types.strict_deserialize_type(sem_id, &serialized).is_ok());
+
+        // a ticker is encoded as the character count followed by the characters' UTF-8 bytes
+        assert!(types
+            .strict_deserialize_type(sem_id, b"\x08ABCDEFGH")
+            .is_ok());
+        assert!(types
+            .strict_deserialize_type(sem_id, b"\x09ABCDEFGHI")
+            .is_err());
+        assert!(types.strict_deserialize_type(sem_id, b"\x00").is_err());
+
+        // a truncated UTF-8 sequence is not a character
+        assert!(types
+            .strict_deserialize_type(sem_id, &[1, 0xF0, 0x9F])
+            .is_err());
     }
 
     #[test]

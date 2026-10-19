@@ -639,6 +639,104 @@ impl RejectListUrl {
     }
 }
 
+/// A character of a [`UnicodeTicker`].
+///
+/// A named wrapper is required: a list of bare `char`s would be a Unicode string, whose length
+/// prefix counts bytes instead of characters.
+#[derive(Wrapper, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default, From)]
+#[wrapper(Deref, Display)]
+#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE)]
+pub struct TickerChar(char);
+
+/// Error parsing a [`UnicodeTicker`].
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Display, Error)]
+#[display(doc_comments)]
+pub enum UnicodeTickerError {
+    /// ticker must contain at least one character.
+    Empty,
+
+    /// ticker has {0} characters, while at most 8 are allowed.
+    TooLong(usize),
+}
+
+/// Asset ticker of a BFA contract.
+///
+/// Unlike [`Ticker`], it may hold any Unicode characters. It is a list of 1 to 8 characters,
+/// rather than a string, so that consensus validation bounds the number of characters and not
+/// the number of UTF-8 bytes.
+#[derive(Wrapper, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, From)]
+#[wrapper(Deref)]
+#[derive(StrictType, StrictEncode, StrictDecode)]
+#[strict_type(lib = LIB_NAME_RGB_BRIDGE)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate", into = "String", try_from = "String")
+)]
+pub struct UnicodeTicker(Confined<Vec<TickerChar>, 1, 8>);
+impl StrictSerialize for UnicodeTicker {}
+impl StrictDeserialize for UnicodeTicker {}
+
+impl UnicodeTicker {
+    pub fn from_strict_val_unchecked(value: &StrictVal) -> Self {
+        let StrictVal::List(chars) = value.skip_wrapper() else {
+            panic!("StrictVal expected to be a list of characters but holds `{value}`");
+        };
+        let ticker = chars
+            .iter()
+            .map(StrictVal::unwrap_string)
+            .collect::<String>();
+        UnicodeTicker::from_str(&ticker).unwrap()
+    }
+}
+
+impl StrictDumb for UnicodeTicker {
+    fn strict_dumb() -> Self { Self::from("DUMB") }
+}
+
+impl Display for UnicodeTicker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|c| Display::fmt(c, f))
+    }
+}
+
+impl FromStr for UnicodeTicker {
+    type Err = UnicodeTickerError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let chars = Confined::try_from_iter(s.chars().map(TickerChar)).map_err(|_| {
+            match s.chars().count() {
+                0 => UnicodeTickerError::Empty,
+                len => UnicodeTickerError::TooLong(len),
+            }
+        })?;
+        Ok(Self(chars))
+    }
+}
+
+impl From<&'static str> for UnicodeTicker {
+    fn from(s: &'static str) -> Self { Self::from_str(s).expect("invalid ticker") }
+}
+
+impl TryFrom<String> for UnicodeTicker {
+    type Error = UnicodeTickerError;
+
+    fn try_from(ticker: String) -> Result<Self, UnicodeTickerError> { Self::from_str(&ticker) }
+}
+
+impl From<UnicodeTicker> for String {
+    fn from(ticker: UnicodeTicker) -> Self { ticker.to_string() }
+}
+
+impl Debug for UnicodeTicker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("UnicodeTicker")
+            .field(&self.to_string())
+            .finish()
+    }
+}
+
 /// Address of an account or contract on an EVM-compatible chain.
 ///
 /// Displayed as lowercase `0x`-prefixed hex; parsed from hex with or without the `0x` prefix,
