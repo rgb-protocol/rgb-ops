@@ -238,7 +238,6 @@ impl ContractBuilder {
         let contract = Contract {
             version: ConsignmentVer::V1,
             transfer: false,
-            terminals: none!(),
             genesis,
             bundles: none!(),
         };

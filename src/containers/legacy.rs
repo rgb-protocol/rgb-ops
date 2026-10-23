@@ -28,7 +28,7 @@ use std::collections::{btree_set, BTreeSet};
 use std::iter;
 
 use aluvm::library::Lib;
-use amplify::confinement::{Confined, LargeVec, NonEmptyOrdSet, NonEmptyVec, SmallOrdMap, U16};
+use amplify::confinement::{Confined, LargeVec, NonEmptyOrdSet, SmallOrdMap, U16};
 use rgb::bitcoin::Transaction as Tx;
 use rgb::commit_verify::mpc;
 use rgb::dbc::Anchor;
@@ -39,9 +39,7 @@ use rgb::{BundleId, ContractId, Genesis, Operation, Schema, SchemaId, Transition
 use strict_encoding::{DefaultBasedStrictDumb, StrictDeserialize, StrictDumb, StrictSerialize};
 use strict_types::TypeSystem;
 
-use crate::containers::{
-    BuilderSeal, Consignment, ConsignmentVer, SealWitness, TerminalSeals, WitnessBundle,
-};
+use crate::containers::{Consignment, ConsignmentVer, SealWitness, WitnessBundle};
 use crate::{SecretSeal, LIB_NAME_RGB_OPS};
 
 pub type TransferV0 = ConsignmentV0<true>;
@@ -242,8 +240,8 @@ impl<const TRANSFER: bool> ConsignmentV0<TRANSFER> {
     /// V1 consignments always carry the full witness transactions, so bundles
     /// referencing a bare [`PubWitness::Txid`] need `resolver` to retrieve the
     /// transaction; the embedded schema, type system and scripts are dropped
-    /// (V1 distributes all three out-of-band via schema definitions) and the concealed
-    /// terminals are mapped to V1 terminal seals.
+    /// (V1 distributes all three out-of-band via schema definitions), and so are the
+    /// terminals, which V1 consignments do not carry.
     pub fn into_v1(
         self,
         resolver: Option<&dyn ResolveWitness>,
@@ -258,18 +256,9 @@ impl<const TRANSFER: bool> ConsignmentV0<TRANSFER> {
             });
         }
 
-        let terminals = SmallOrdMap::from_iter_checked(self.terminals.into_iter().map(
-            |(bundle_id, secrets)| {
-                let seals =
-                    NonEmptyVec::from_iter_checked(secrets.into_iter().map(BuilderSeal::Concealed));
-                (bundle_id, TerminalSeals::from(seals))
-            },
-        ));
-
         Ok(Consignment {
             version: ConsignmentVer::V1,
             transfer: self.transfer,
-            terminals,
             genesis: self.genesis,
             bundles: LargeVec::from_iter_checked(bundles),
         })
@@ -320,17 +309,22 @@ mod test {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/asset/historical_transfer_v0.rgb");
         let v0 = TransferV0::strict_deserialize_from_file::<{ usize::MAX }>(path).unwrap();
         let bundles = v0.bundles.len();
-        let terminals = v0.terminals.len();
-
-        let v1 = v0.into_v1(None).expect("conversion to V1");
-        assert_eq!(v1.bundles.len(), bundles);
-        assert_eq!(v1.terminals.len(), terminals);
-        // every V0 terminal seal is concealed, and stays so in V1
-        assert!(v1
+        let secrets = v0
             .terminals
             .values()
             .flat_map(|seals| seals.into_iter())
-            .all(|seal| matches!(seal, BuilderSeal::Concealed(_))));
+            .collect::<BTreeSet<_>>();
+
+        let v1 = v0.into_v1(None).expect("conversion to V1");
+        assert_eq!(v1.bundles.len(), bundles);
+        // the V0 terminals are dropped, but the assignments they named are
+        // still found by their secret seals
+        let found = v1
+            .assignments_to(&secrets, &bset![])
+            .into_iter()
+            .map(|m| m.seal.to_secret_seal())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(found, secrets);
     }
 
     #[test]

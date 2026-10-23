@@ -82,7 +82,6 @@ pub fn almost_default_contract() -> Contract {
     Contract {
         version: ConsignmentVer::V1,
         transfer: Default::default(),
-        terminals: Default::default(),
         genesis: almost_default_genesis(&almost_default_schema()),
         bundles: Default::default(),
     }
@@ -94,7 +93,6 @@ pub fn almost_default_transfer() -> Transfer {
     Transfer {
         version: ConsignmentVer::V1,
         transfer: true,
-        terminals: Default::default(),
         genesis: almost_default_genesis(&almost_default_schema()),
         bundles: Default::default(),
     }

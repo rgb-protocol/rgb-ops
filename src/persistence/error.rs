@@ -110,12 +110,6 @@ pub enum StockError<S: RgbStore, E: Error = Infallible> {
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]
 #[display(doc_comments)]
 pub enum ConsignError {
-    /// unable to construct consignment: too many bundles carry terminals.
-    TooManyTerminalBundles,
-
-    /// unable to construct consignment: too many terminal seals for a bundle.
-    TooManyTerminalSeals,
-
     /// unable to construct consignment: history size too large, resulting in
     /// too many transitions.
     TooManyBundles,

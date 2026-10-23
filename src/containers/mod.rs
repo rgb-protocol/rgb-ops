@@ -37,18 +37,17 @@ pub(crate) mod test_fixtures;
 
 pub use anchors::{SealWitness, SealWitnessMergeError, SpvProof, WitnessBundle};
 pub use consignment::{
-    Consignment, ConsignmentConstraintError, ConsignmentExt, ConsignmentId, ConsignmentParseError,
-    Contract, PendingConsignment, Transfer, UncheckedConsignment, UncheckedContract,
-    UncheckedTransfer, ValidConsignment, ValidContract, ValidTransfer,
+    AssignmentMatch, Consignment, ConsignmentConstraintError, ConsignmentExt, ConsignmentId,
+    ConsignmentParseError, Contract, PendingConsignment, Transfer, UncheckedConsignment,
+    UncheckedContract, UncheckedTransfer, ValidConsignment, ValidContract, ValidTransfer,
 };
 pub use external_anchors::{AnchorResolverError, CheckedAnchorResolver, ResolveAnchor};
 pub use file::{FileContent, LoadError, UniversalFile};
 pub use partials::{Batch, Fascia};
 pub use rgb::BuilderSeal;
-pub use util::{ConsignmentVer, TerminalSeals};
+pub use util::ConsignmentVer;
 
 pub const ASCII_ARMOR_SCHEMA: &str = "Schema";
 pub const ASCII_ARMOR_CONTRACT: &str = "Contract";
 pub const ASCII_ARMOR_VERSION: &str = "Version";
-pub const ASCII_ARMOR_TERMINAL: &str = "Terminal";
 pub const ASCII_ARMOR_CONSIGNMENT_TYPE: &str = "Type";

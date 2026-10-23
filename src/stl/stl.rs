@@ -55,7 +55,7 @@ pub const LIB_ID_RGB_BURN: &str =
 
 /// Strict types id for the library representing of RGB Ops data types.
 pub const LIB_ID_RGB_OPS: &str =
-    "stl:iXN1dKpE-Mrub8G4-TnKVA87-mi1~L1j-KknQv8G-HVIPvis#story-october-cloud";
+    "stl:oxDSdS0B-sxcqNzS-D0gMdHG-Jav5tol-qh~cFXp-QO2rfUc#group-prague-oliver";
 
 /// Generates strict type library representation of RGB Ops data types.
 pub fn rgb_ops_stl() -> TypeLib {

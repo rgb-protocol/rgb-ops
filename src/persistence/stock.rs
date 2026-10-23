@@ -58,7 +58,7 @@ use super::{
 };
 use crate::containers::{
     BuilderSeal, Consignment, ConsignmentExt, ConsignmentVer, Contract, Fascia, SealWitness,
-    TerminalSeals, Transfer, ValidConsignment, ValidContract, ValidTransfer, WitnessBundle,
+    Transfer, ValidConsignment, ValidContract, ValidTransfer, WitnessBundle,
 };
 use crate::contract::{
     AllocatedState, ContractBuilder, ContractData, ContractStateRead, FilteredContractState,
@@ -94,10 +94,15 @@ pub type RetrievedSpvProofs = BTreeMap<Txid, SpvProof>;
 
 /// What a consignment must include and how it is composed, threaded through the
 /// composition helpers of [`Stock`].
+///
+/// `outputs` and `secret_seals` only select state: the transitions assigning to
+/// them, and their history, go into the consignment, but nothing in it records
+/// that they were asked for. A receiver finds its state with
+/// [`Consignment::assignments_to`].
 struct ConsignParams<'a> {
-    /// Seals whose state must be included and reported as terminals.
+    /// Outputs whose state must be included.
     outputs: &'a [OutputSeal],
-    /// Blinded seals whose state must be included and reported as terminals.
+    /// Blinded seals whose state must be included.
     secret_seals: &'a [SecretSeal],
     /// If set, restrict the consignment to bundles anchored by this witness and
     /// carry them under it: a bundle anchored under several transactions is
@@ -750,9 +755,9 @@ impl<S: RgbStore> Stock<S> {
             let mut opids = opids.into_iter().collect::<HashSet<_>>();
             let by_output = self.opouts_by_outputs(contract_id, params.outputs.iter().copied())?;
             // an output the contract assigns nothing to is a caller error here,
-            // though not to the lookup: it asks for a terminal over state which
-            // is not there, and the consignment would come out silently missing
-            // it rather than wrong
+            // though not to the lookup: it asks for state which is not there,
+            // and the consignment would come out silently missing it rather
+            // than wrong
             if let Some(missing) = params
                 .outputs
                 .iter()
@@ -824,19 +829,12 @@ impl<S: RgbStore> Stock<S> {
         params: &ConsignParams,
         pending_spv: &mut BTreeSet<Txid>,
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, ConsignError>> {
-        let ConsignParams {
-            outputs,
-            secret_seals,
-            witness_id,
-            ..
-        } = params;
+        let ConsignParams { witness_id, .. } = params;
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut bundles = BTreeMap::<BundleId, (WitnessBundle, u32)>::new();
         // witness selected for each bundle, cached since several opids may share a bundle
         let mut bundle_witnesses = HashMap::<BundleId, (Txid, WitnessOrd)>::new();
         let mut parent_opids = Vec::<OpId>::new();
-        let mut terminal_seals: BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>> =
-            BTreeMap::new();
         for opid in opids {
             if opid == contract_id {
                 continue; // we skip genesis since it will be present anywhere
@@ -847,7 +845,7 @@ impl<S: RgbStore> Stock<S> {
             let bundle_id = self.bundle_id_for_op(transition.id())?;
 
             let (witness_ids, bundle_contract_id) = self.bundle_info(bundle_id)?;
-            // skip bundles not anchored by the terminals witness
+            // skip bundles not anchored by the requested witness
             if witness_id.is_some_and(|wid| !witness_ids.contains(&wid)) {
                 continue;
             }
@@ -866,24 +864,8 @@ impl<S: RgbStore> Stock<S> {
                     witness
                 }
             };
-            let (bundle_witness_id, _) = bundle_witness;
 
             parent_opids.extend(transition.inputs().iter().map(|input| input.op));
-
-            // 1.4. Collect terminal seals for this bundle to add to the consignment terminals.
-            for typed_assignments in transition.assignments.values() {
-                for index in 0..typed_assignments.len_u16() {
-                    let seal = *typed_assignments.seal_at(index).expect("cycling indexes");
-                    let include_terminal = match seal {
-                        BuilderSeal::Revealed(revealed_seal) => outputs
-                            .contains(&revealed_seal.to_output_seal_or_default(bundle_witness_id)),
-                        BuilderSeal::Concealed(secret_seal) => secret_seals.contains(&secret_seal),
-                    };
-                    if include_terminal {
-                        terminal_seals.entry(bundle_id).or_default().insert(seal);
-                    }
-                }
-            }
 
             if let Some((wbundle, _)) = bundles.get_mut(&bundle_id) {
                 wbundle.bundle.reveal_transition(transition)?;
@@ -900,14 +882,7 @@ impl<S: RgbStore> Stock<S> {
                 );
             };
         }
-        self.consign_bundles(
-            contract_id,
-            bundles,
-            parent_opids,
-            terminal_seals,
-            params,
-            pending_spv,
-        )
+        self.consign_bundles(contract_id, bundles, parent_opids, params, pending_spv)
     }
 
     fn consign_bundles<const TRANSFER: bool>(
@@ -915,11 +890,10 @@ impl<S: RgbStore> Stock<S> {
         contract_id: ContractId,
         mut bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
         mut parent_opids: Vec<OpId>,
-        terminal_seals: BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>>,
         params: &ConsignParams,
         pending_spv: &mut BTreeSet<Txid>,
     ) -> Result<ConsignmentWithOptDag<TRANSFER>, StockError<S, ConsignError>> {
-        // 2. Collect all state transitions between terminals and genesis
+        // 2. Collect all state transitions between the selected ones and genesis
         let mut seen_ids = HashSet::new();
         while let Some(id) = parent_opids.pop() {
             if id == contract_id {
@@ -960,17 +934,6 @@ impl<S: RgbStore> Stock<S> {
 
         let bundles =
             Confined::try_from_iter(sorted_bundles).map_err(|_| ConsignError::TooManyBundles)?;
-        let terminals = Confined::try_from(
-            terminal_seals
-                .into_iter()
-                .map(|(bundle_id, seals)| {
-                    Confined::try_from_iter(seals)
-                        .map(|confined| (bundle_id, TerminalSeals::from(confined)))
-                        .map_err(|_| ConsignError::TooManyTerminalSeals)
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?,
-        )
-        .map_err(|_| ConsignError::TooManyTerminalBundles)?;
 
         // TODO: Conceal everything we do not need
 
@@ -979,7 +942,6 @@ impl<S: RgbStore> Stock<S> {
             transfer: TRANSFER,
 
             genesis,
-            terminals,
             bundles,
         };
 
@@ -1132,44 +1094,10 @@ impl<S: RgbStore> Stock<S> {
                 .map_err(|_| ConsignError::UnrelatedContract(contract_id))?,
             dbc_proof,
         );
-        // Collect terminal seals actually present in the bundle: revealed for witness-vout
-        // beneficiaries, concealed for blinded ones. Only matching seals are included so the
-        // terminal-consistency check in the validator passes.
-        let mut terminal_seals: BTreeSet<BuilderSeal<GraphSeal>> = BTreeSet::new();
-        for kt in &contract_bundle.known_transitions {
-            for typed_assigns in kt.transition.assignments.values() {
-                for index in 0..typed_assigns.len_u16() {
-                    match typed_assigns
-                        .revealed_seal_at(index)
-                        .expect("cycling indexes")
-                    {
-                        Some(seal) => {
-                            if outputs.contains(&seal.to_output_seal_or_default(witness_id)) {
-                                terminal_seals.insert(BuilderSeal::Revealed(seal));
-                            }
-                        }
-                        None => {
-                            let secret = typed_assigns
-                                .confidential_seal_at(index)
-                                .expect("cycling indexes");
-                            if secret_seals.contains(&secret) {
-                                terminal_seals.insert(BuilderSeal::Concealed(secret));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let terminal_seals = if !terminal_seals.is_empty() {
-            bmap! {bundle_id => terminal_seals}
-        } else {
-            bmap! {}
-        };
         self.consign_bundles(
             contract_id,
             bmap! {bundle_id => (WitnessBundle::with(witness_tx, anchor, contract_bundle), u32::MAX)},
             required_opids.into_iter().collect::<Vec<_>>(),
-            terminal_seals,
             params,
             pending_spv,
         )
@@ -1411,13 +1339,11 @@ impl<S: RgbStore> Stock<S> {
         // everything the chain had to say has been said; from here on the
         // unit of work runs inside one transaction
         let stale = self.store_transaction(move |s| {
-            // reveal the terminal seals this stock knows the secret of
-            let consignment = consignment.reveal_terminal_seals(
-                consignment_bundles
-                    .iter()
-                    .map(|(_, bundle_id, _)| *bundle_id),
-                |secret| s.store.seal_of_secret(secret).map_err(StockError::Store),
-            )?;
+            // reveal every concealed seal this stock knows the secret of, so
+            // that a blinded receive is stored with its seal revealed
+            let consignment = consignment.reveal_known_seals(|secret| {
+                s.store.seal_of_secret(secret).map_err(StockError::Store)
+            })?;
 
             // witness ords as they will be once the consignment is consumed:
             // every consignment witness, and every alternative the pre-pass
@@ -2836,7 +2762,7 @@ impl<S: RgbStore> Stock<S> {
     ///
     /// A caller for which an empty answer *is* an error says so itself, and can
     /// name the output it was: see [`Stock::consign`], where an output naming
-    /// no state is a terminal that cannot be built.
+    /// no state is a request for state which is not there.
     fn opouts_by_outputs(
         &self,
         contract_id: ContractId,
@@ -3051,8 +2977,8 @@ mod test {
     }
 
     /// The strictness that used to live in the lookup: composing for an output
-    /// the contract assigns nothing to is still an error, because the terminal
-    /// asked for cannot be built over state which is not there.
+    /// the contract assigns nothing to is still an error, because the state
+    /// asked for is not there.
     #[test]
     fn consign_rejects_an_output_with_no_state() {
         let mut stock = SqliteStock::in_memory().unwrap();
@@ -3347,7 +3273,6 @@ mod test {
         let transfer = Consignment::<true> {
             version: ConsignmentVer::V1,
             transfer: true,
-            terminals: none!(),
             genesis,
             bundles: Confined::from_checked(vec![WitnessBundle::with(
                 tx(witness_nonce),
@@ -3680,17 +3605,32 @@ mod test {
         bundle_id
     }
 
-    /// Test cases for construction of consignment terminals. Returns:
+    /// The seals `consignment` assigns to `outputs`, each with the witness of
+    /// its bundle, as a receiver of those outputs finds them.
+    fn seals_assigned_to(
+        consignment: &Transfer,
+        outputs: &[OutputSeal],
+    ) -> BTreeSet<(Option<Txid>, BuilderSeal<GraphSeal>)> {
+        let outpoints = outputs.iter().map(|o| o.to_outpoint()).collect();
+        consignment
+            .assignments_to(&bset![], &outpoints)
+            .into_iter()
+            .map(|m| (m.witness_id, m.seal))
+            .collect()
+    }
+
+    /// Test cases for locating the assignments to requested outputs in a
+    /// composed consignment. Returns:
     /// - Vec of seals to include in stock
     /// - Vec of OutputSeal to input to the consign method
-    /// - Vec of expected seals to be included as terminals
+    /// - Vec of seals expected to be found assigned to those outputs
     ///
     /// 4 cases are covered
-    /// - regular "pay to witness", requested as terminal
-    /// - change output in "pay to witness", not requested as terminal
-    /// - revealed "pay to utxo" with the same vout as one of the above, not requested as terminal
-    /// - revealed "pay to utxo", requested as terminal
-    fn terminal_seal_cases(witness_id: Txid) -> (Vec<GraphSeal>, Vec<OutputSeal>, Vec<GraphSeal>) {
+    /// - regular "pay to witness", requested
+    /// - change output in "pay to witness", not requested
+    /// - revealed "pay to utxo" with the same vout as one of the above, not requested
+    /// - revealed "pay to utxo", requested
+    fn requested_seal_cases(witness_id: Txid) -> (Vec<GraphSeal>, Vec<OutputSeal>, Vec<GraphSeal>) {
         let requested_vout = 1u32;
         let other_txid = txid(0xBB);
         let utxo_txid = txid(0xCC);
@@ -3710,16 +3650,16 @@ mod test {
         (seals, outputs, expected)
     }
 
-    /// Apply terminal_seal_cases to stock.transfer
+    /// Apply requested_seal_cases to stock.transfer
     #[test]
-    fn terminal_seals_from_stored_bundle() {
+    fn requested_seals_from_stored_bundle() {
         let mut stock = SqliteStock::in_memory().unwrap();
         let contract_id = seed_consign_contract(&mut stock);
 
         let witness_nonce = 0xAA;
         let witness_id = txid(witness_nonce);
-        let (seals, outputs, expected) = terminal_seal_cases(witness_id);
-        let bundle_id = seed_witness_bundle(
+        let (seals, outputs, expected) = requested_seal_cases(witness_id);
+        seed_witness_bundle(
             &mut stock,
             contract_id,
             witness_nonce,
@@ -3727,21 +3667,14 @@ mod test {
         );
 
         let (consignment, _) = stock
-            .transfer(contract_id, outputs, [], [], Some(witness_id), None)
+            .transfer(contract_id, &outputs, [], [], Some(witness_id), None)
             .expect("consignment should be built");
 
-        assert_eq!(consignment.terminals.len(), 1);
-        let terminals = consignment
-            .terminals
-            .get(&bundle_id)
-            .expect("the bundle must be a terminal")
-            .into_iter()
-            .collect::<BTreeSet<_>>();
         assert_eq!(
-            terminals,
+            seals_assigned_to(&consignment, &outputs),
             expected
                 .into_iter()
-                .map(BuilderSeal::Revealed)
+                .map(|seal| (Some(witness_id), BuilderSeal::Revealed(seal)))
                 .collect::<BTreeSet<_>>()
         );
     }
@@ -3871,14 +3804,15 @@ mod test {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Apply terminal_seal_cases to stock.transfer_from_fascia
+    /// Apply requested_seal_cases to stock.transfer_from_fascia
     #[test]
-    fn terminal_seals_from_fascia() {
+    fn requested_seals_from_fascia() {
         let mut stock = SqliteStock::in_memory().unwrap();
         let contract_id = seed_consign_contract(&mut stock);
 
         let witness_nonce = 0xAA;
-        let (seals, outputs, expected) = terminal_seal_cases(txid(witness_nonce));
+        let witness_id = txid(witness_nonce);
+        let (seals, outputs, expected) = requested_seal_cases(witness_id);
         let bundle = seal_bundle(contract_id, &seals, 0);
         let bundle_id = bundle.bundle_id();
         let fascia = Fascia::new(
@@ -3887,21 +3821,14 @@ mod test {
         );
 
         let (consignment, _) = stock
-            .transfer_from_fascia(contract_id, outputs, [], [], &fascia, None)
+            .transfer_from_fascia(contract_id, &outputs, [], [], &fascia, None)
             .expect("consignment should be built");
 
-        assert_eq!(consignment.terminals.len(), 1);
-        let terminals = consignment
-            .terminals
-            .get(&bundle_id)
-            .expect("the bundle must be a terminal")
-            .into_iter()
-            .collect::<BTreeSet<_>>();
         assert_eq!(
-            terminals,
+            seals_assigned_to(&consignment, &outputs),
             expected
                 .into_iter()
-                .map(BuilderSeal::Revealed)
+                .map(|seal| (Some(witness_id), BuilderSeal::Revealed(seal)))
                 .collect::<BTreeSet<_>>()
         );
     }
@@ -3939,14 +3866,14 @@ mod test {
         assert!(stock.all_invalid_op_ids().unwrap().is_empty());
     }
 
-    /// Test terminal collection in stock.consign_operations
+    /// Test locating requested outputs in a consignment composed by stock.consign_operations
     ///
     /// Each of the three bundles is closed by a different witness TX and all three seals are
     /// requested as outputs, so every seal may only be resolved against the witness of the
     /// bundle holding it: the first two are witness-vout seals sharing a vout on
     /// distinct witnesses, the third sits on a pre-existing UTXO (`TxPtr::Txid`)
     #[test]
-    fn terminal_seals_across_multiple_witnesses() {
+    fn requested_seals_across_multiple_witnesses() {
         let mut stock = SqliteStock::in_memory().unwrap();
         let contract_id = seed_consign_contract(&mut stock);
         let vout = 1u32;
@@ -3964,40 +3891,30 @@ mod test {
         let bundle_1 = seal_bundle(contract_id, &[seal_1], 0);
         let bundle_2 = seal_bundle(contract_id, &[seal_2], 1);
         let bundle_3 = seal_bundle(contract_id, &[seal_3], 2);
-        let bundle_1 = seed_witness_bundle(&mut stock, contract_id, witness_1, bundle_1);
-        let bundle_2 = seed_witness_bundle(&mut stock, contract_id, witness_2, bundle_2);
-        let bundle_3 = seed_witness_bundle(&mut stock, contract_id, witness_3, bundle_3);
+        seed_witness_bundle(&mut stock, contract_id, witness_1, bundle_1);
+        seed_witness_bundle(&mut stock, contract_id, witness_2, bundle_2);
+        seed_witness_bundle(&mut stock, contract_id, witness_3, bundle_3);
 
+        let outputs = [
+            OutputSeal::with(txid(witness_1), vout),
+            OutputSeal::with(txid(witness_2), vout),
+            OutputSeal::with(utxo_txid, 0u32),
+        ];
         let (consignment, _) = stock
-            .transfer(
-                contract_id,
-                [
-                    OutputSeal::with(txid(witness_1), vout),
-                    OutputSeal::with(txid(witness_2), vout),
-                    OutputSeal::with(utxo_txid, 0u32),
-                ],
-                [],
-                [],
-                None,
-                None,
-            )
+            .transfer(contract_id, outputs, [], [], None, None)
             .expect("consignment should be built");
 
-        assert_eq!(consignment.terminals.len(), 3);
-        for (bundle_id, seal) in [(bundle_1, seal_1), (bundle_2, seal_2), (bundle_3, seal_3)] {
-            let terminals = consignment
-                .terminals
-                .get(&bundle_id)
-                .expect("bundle must be a terminal")
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            assert_eq!(terminals, bset![BuilderSeal::Revealed(seal)]);
-        }
+        assert_eq!(consignment.bundles.len(), 3);
+        assert_eq!(seals_assigned_to(&consignment, &outputs), bset![
+            (Some(txid(witness_1)), BuilderSeal::Revealed(seal_1)),
+            (Some(txid(witness_2)), BuilderSeal::Revealed(seal_2)),
+            (Some(txid(witness_3)), BuilderSeal::Revealed(seal_3)),
+        ]);
     }
 
     /// One bundle anchored under two witnesses, the consignment requested for
     /// each of them by witness id: it is carried under the requested one, with
-    /// its terminal resolved against it, whichever of the two ranks first.
+    /// its seal resolved against it, whichever of the two ranks first.
     #[test]
     fn consignment_carries_the_requested_witness() {
         let mut stock = SqliteStock::in_memory().unwrap();
@@ -4012,29 +3929,20 @@ mod test {
 
         for nonce in [1u8, 2] {
             let witness_id = txid(nonce);
+            let outputs = [OutputSeal::with(witness_id, vout)];
             let (consignment, _) = stock
-                .transfer(
-                    contract_id,
-                    [OutputSeal::with(witness_id, vout)],
-                    [],
-                    [],
-                    Some(witness_id),
-                    None,
-                )
+                .transfer(contract_id, outputs, [], [], Some(witness_id), None)
                 .expect("consignment should be built");
             let carried = consignment
                 .bundles
                 .iter()
                 .find(|wb| wb.bundle.bundle_id() == bundle_id)
-                .expect("the bundle is a terminal");
+                .expect("the bundle is consigned");
             assert_eq!(carried.witness_id(), witness_id, "witness {nonce} was asked for");
-            let terminals = consignment
-                .terminals
-                .get(&bundle_id)
-                .expect("bundle must be a terminal")
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            assert_eq!(terminals, bset![BuilderSeal::Revealed(seal)]);
+            assert_eq!(seals_assigned_to(&consignment, &outputs), bset![(
+                Some(witness_id),
+                BuilderSeal::Revealed(seal)
+            )]);
         }
 
         // nothing lands on an archived witness, so nothing can be consigned for it

@@ -26,7 +26,7 @@ use std::ops::Deref;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
 
-use amplify::confinement::{LargeVec, SmallOrdMap};
+use amplify::confinement::LargeVec;
 use amplify::{ByteArray, Bytes32};
 use armor::{ArmorHeader, AsciiArmor, StrictArmor};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
@@ -38,8 +38,8 @@ use rgb::validation::{
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
-    impl_serde_baid64, validation, BundleId, ContractId, Genesis, GraphSeal, Operation, SchemaId,
-    TransitionBundle, Txid,
+    impl_serde_baid64, validation, ContractId, ExposedSeal, Genesis, GraphSeal, OpId, Operation,
+    Opout, SchemaId, TransitionBundle, Txid,
 };
 use rgbcore::validation::ConsignmentApi;
 use strict_encoding::{
@@ -47,8 +47,8 @@ use strict_encoding::{
 };
 
 use super::{
-    BuilderSeal, ConsignmentVer, TerminalSeals, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE,
-    ASCII_ARMOR_CONTRACT, ASCII_ARMOR_SCHEMA, ASCII_ARMOR_TERMINAL, ASCII_ARMOR_VERSION,
+    BuilderSeal, ConsignmentVer, WitnessBundle, ASCII_ARMOR_CONSIGNMENT_TYPE, ASCII_ARMOR_CONTRACT,
+    ASCII_ARMOR_SCHEMA, ASCII_ARMOR_VERSION,
 };
 use crate::containers::anchors::SpvProof;
 use crate::containers::external_anchors::{
@@ -57,7 +57,7 @@ use crate::containers::external_anchors::{
 use crate::contract::{ContractData, FilteredContractState, UnfilteredContractState};
 use crate::info::ContractInfo;
 use crate::stl::BridgeLocation;
-use crate::{SecretSeal, LIB_NAME_RGB_OPS};
+use crate::{Outpoint, SecretSeal, LIB_NAME_RGB_OPS};
 
 pub type Transfer = Consignment<true>;
 pub type Contract = Consignment<false>;
@@ -297,9 +297,12 @@ impl<const TRANSFER: bool> Deref for ValidConsignment<TRANSFER> {
 /// consistent and properly committed into the commitment layer, like bitcoin
 /// blockchain or current state of the lightning channel).
 ///
-/// All consignments-related procedures, including validation or merging
-/// consignments data into the store or schema-specific data storage, must start
-/// with `endpoints` and process up to the genesis.
+/// A consignment does not say whom it is addressed to: it only carries the
+/// genesis and the bundles of the history. What it means to a given party is
+/// for that party to work out from its contents, with
+/// [`Consignment::spent_opouts`] and [`Consignment::terminal_ops`] for what it
+/// spends and what nothing in it builds on, and [`Consignment::assignments_to`]
+/// for the state it assigns to that party's seals or outpoints.
 #[derive(Clone, Debug, PartialEq, Display)]
 #[display(AsciiArmor::to_ascii_armored_string)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
@@ -319,9 +322,6 @@ pub struct Consignment<const TRANSFER: bool> {
     /// transfer (true), or it is just a consignment with an information about a
     /// contract.
     pub transfer: bool,
-
-    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    pub terminals: SmallOrdMap<BundleId, TerminalSeals>,
 
     /// Genesis data.
     pub genesis: Genesis,
@@ -348,7 +348,6 @@ impl<const TRANSFER: bool> CommitEncode for Consignment<TRANSFER> {
         e.commit_to_list(&LargeVec::from_iter_checked(
             self.bundles.iter().map(WitnessBundle::commit_id),
         ));
-        e.commit_to_map(&self.terminals);
     }
 }
 
@@ -376,12 +375,124 @@ impl<const TRANSFER: bool> ConsignmentApi for Consignment<TRANSFER> {
             .iter()
             .map(|wb| (&wb.bundle, &wb.anchor, &wb.tx, wb.spv_proof.as_ref()))
     }
+}
 
-    fn terminals(&self) -> BTreeMap<BundleId, BTreeSet<BuilderSeal<GraphSeal>>> {
-        self.terminals
+/// An assignment found by [`Consignment::assignments_to`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct AssignmentMatch {
+    /// Witness of the bundle holding the assigning transition, `None` for an
+    /// assignment of the genesis.
+    pub witness_id: Option<Txid>,
+    /// The assignment.
+    pub opout: Opout,
+    /// Its seal, in the form the consignment carries it. A genesis seal is
+    /// converted to a [`GraphSeal`] with an explicit txid.
+    pub seal: BuilderSeal<GraphSeal>,
+}
+
+impl<const TRANSFER: bool> Consignment<TRANSFER> {
+    /// Every opout spent within the consignment: the keys of the input maps of
+    /// all its bundles.
+    ///
+    /// An opout spent by a concealed transition counts as spent, and one spent
+    /// only outside the consignment does not. An output of the genesis or of a
+    /// known transition is unspent within the consignment when it is not here.
+    pub fn spent_opouts(&self) -> BTreeSet<Opout> {
+        self.bundles
             .iter()
-            .map(|(bundle_id, seals)| (*bundle_id, seals.into_iter().collect()))
+            .flat_map(|wb| wb.bundle.input_map.keys().copied())
             .collect()
+    }
+
+    /// The known transitions nothing in the consignment builds on: those none
+    /// of whose opouts is in [`Self::spent_opouts`], wherever their bundle sits.
+    ///
+    /// A transition with no assignments, such as a full burn, is always one.
+    /// Every output of a terminal operation is unspent within the consignment.
+    /// Other unspent outputs, such as the change of an earlier transfer, are
+    /// revealed by the consignment but not what it proves, so they are not
+    /// reported by any helper.
+    pub fn terminal_ops(&self) -> BTreeSet<OpId> {
+        let spent = self.spent_opouts();
+        self.bundles
+            .iter()
+            .flat_map(|wb| &wb.bundle.known_transitions)
+            .filter(|kt| {
+                kt.transition.assignments.iter().all(|(ty, ta)| {
+                    (0..ta.len_u16()).all(|no| !spent.contains(&Opout::new(kt.opid, *ty, no)))
+                })
+            })
+            .map(|kt| kt.opid)
+            .collect()
+    }
+
+    /// Lists every assignment of the genesis and of the known transitions,
+    /// across all bundles, whose seal matches one of the targets.
+    ///
+    /// A seal matches a secret seal when its concealed form equals it, so both
+    /// concealed and revealed seals can match. A revealed seal matches an
+    /// outpoint when it closes over it, a witness-relative seal being resolved
+    /// against the witness of its own bundle. Genesis seals are matched in their
+    /// own form, before conversion to [`GraphSeal`].
+    ///
+    /// Assignments are returned in consignment order, each one once even when
+    /// it matches several targets.
+    pub fn assignments_to(
+        &self,
+        secret_seals: &BTreeSet<SecretSeal>,
+        outpoints: &BTreeSet<Outpoint>,
+    ) -> Vec<AssignmentMatch> {
+        fn matches<Seal: ExposedSeal>(
+            seal: &BuilderSeal<Seal>,
+            witness_id: Option<Txid>,
+            secret_seals: &BTreeSet<SecretSeal>,
+            outpoints: &BTreeSet<Outpoint>,
+        ) -> bool {
+            if secret_seals.contains(&seal.to_secret_seal()) {
+                return true;
+            }
+            match seal {
+                BuilderSeal::Revealed(seal) => {
+                    outpoints.contains(&seal.to_output_seal_or(witness_id).to_outpoint())
+                }
+                BuilderSeal::Concealed(_) => false,
+            }
+        }
+
+        let mut found = vec![];
+        let genesis_id = self.genesis.id();
+        for (ty, ta) in self.genesis.assignments.iter() {
+            for (no, seal) in ta.seals().enumerate() {
+                if matches(seal, None, secret_seals, outpoints) {
+                    let seal = match *seal {
+                        BuilderSeal::Revealed(seal) => BuilderSeal::Revealed(seal.transmutate()),
+                        BuilderSeal::Concealed(secret) => BuilderSeal::Concealed(secret),
+                    };
+                    found.push(AssignmentMatch {
+                        witness_id: None,
+                        opout: Opout::new(genesis_id, *ty, no as u16),
+                        seal,
+                    });
+                }
+            }
+        }
+        for wb in &self.bundles {
+            let witness_id = wb.witness_id();
+            for kt in &wb.bundle.known_transitions {
+                for (ty, ta) in kt.transition.assignments.iter() {
+                    for (no, seal) in ta.seals().enumerate() {
+                        if matches(seal, Some(witness_id), secret_seals, outpoints) {
+                            found.push(AssignmentMatch {
+                                witness_id: Some(witness_id),
+                                opout: Opout::new(kt.opid, *ty, no as u16),
+                                seal: *seal,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        found
     }
 }
 
@@ -392,30 +503,37 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     #[inline]
     pub fn schema_id(&self) -> SchemaId { self.genesis.schema_id }
 
-    /// Reveals the terminal seals whose secret `f` can answer for.
+    /// Reveals every concealed seal, in any bundle, whose secret `f` can
+    /// answer for.
     ///
-    /// `bundle_ids` must carry the id of each bundle, aligned with
-    /// [`Self::bundles`]: every caller has the ids computed already, so they
-    /// are taken rather than re-hashed here.
-    pub(crate) fn reveal_terminal_seals<E>(
+    /// `f` is asked once per distinct secret, however many assignments share
+    /// it, and a seal is revealed in every assignment of its bundle carrying
+    /// it, so the bundle stays consistent.
+    pub(crate) fn reveal_known_seals<E>(
         mut self,
-        bundle_ids: impl IntoIterator<Item = BundleId>,
         f: impl Fn(SecretSeal) -> Result<Option<GraphSeal>, E>,
     ) -> Result<Self, E> {
-        for (witness_bundle, bundle_id) in self.bundles.iter_mut().zip(bundle_ids) {
-            let Some(terminal_seals) = self.terminals.get_mut(&bundle_id) else {
-                continue;
-            };
-            for terminal_seal in terminal_seals.iter_mut() {
-                let BuilderSeal::Concealed(secret) = *terminal_seal else {
-                    // Nothing to reveal for already revealed terminals
-                    continue;
+        let concealed_in = |bundle: &TransitionBundle| {
+            bundle
+                .known_transitions
+                .iter()
+                .flat_map(|kt| kt.transition.assignments.values())
+                .flat_map(|ta| {
+                    ta.seals()
+                        .filter_map(BuilderSeal::concealed)
+                        .collect::<Vec<_>>()
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let mut known = BTreeMap::<SecretSeal, Option<GraphSeal>>::new();
+        for witness_bundle in self.bundles.iter_mut() {
+            for secret in concealed_in(&witness_bundle.bundle) {
+                let seal = match known.get(&secret) {
+                    Some(seal) => *seal,
+                    None => *known.entry(secret).or_insert(f(secret)?),
                 };
-                if let Some(seal) = f(secret)? {
-                    // Reveal the seal both inside the bundle transitions and in
-                    // the terminal entry, keeping them consistent with each other
+                if let Some(seal) = seal {
                     witness_bundle.bundle.reveal_seal(seal);
-                    terminal_seal.reveal(seal);
                 }
             }
         }
@@ -427,7 +545,6 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             version: self.version,
             transfer: false,
             genesis: self.genesis,
-            terminals: none!(),
             bundles: none!(),
         }
     }
@@ -448,9 +565,9 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
                 "invalid consignment type"
             ))));
         }
-        if !self.transfer && (!self.bundles.is_empty() || !self.terminals.is_empty()) {
+        if !self.transfer && !self.bundles.is_empty() {
             return Err(ValidationError::InvalidConsignment(Failure::Custom(s!(
-                "contract consignment must not contain bundles nor terminals"
+                "contract consignment must not contain bundles"
             ))));
         }
 
@@ -509,7 +626,7 @@ impl<const TRANSFER: bool> StrictArmor for Consignment<TRANSFER> {
 
     fn armor_id(&self) -> Self::Id { self.commit_id() }
     fn armor_headers(&self) -> Vec<ArmorHeader> {
-        let mut headers = vec![
+        vec![
             ArmorHeader::new(ASCII_ARMOR_VERSION, format!("{:#}", self.version)),
             ArmorHeader::new(
                 ASCII_ARMOR_CONSIGNMENT_TYPE,
@@ -517,14 +634,7 @@ impl<const TRANSFER: bool> StrictArmor for Consignment<TRANSFER> {
             ),
             ArmorHeader::new(ASCII_ARMOR_CONTRACT, self.contract_id().to_string()),
             ArmorHeader::new(ASCII_ARMOR_SCHEMA, self.schema_id().to_string()),
-        ];
-        if !self.terminals.is_empty() {
-            headers.push(ArmorHeader::with(
-                ASCII_ARMOR_TERMINAL,
-                self.terminals.keys().map(BundleId::to_string),
-            ));
-        }
-        headers
+        ]
     }
 }
 
@@ -627,8 +737,6 @@ impl<const TRANSFER: bool> TryFrom<UncheckedConsignment<TRANSFER>> for Consignme
 struct ConsignmentShadow {
     version: ConsignmentVer,
     transfer: bool,
-    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    terminals: SmallOrdMap<BundleId, TerminalSeals>,
     genesis: Genesis,
     #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
     bundles: LargeVec<WitnessBundle>,
@@ -641,7 +749,6 @@ impl<'de, const TRANSFER: bool> serde_crate::Deserialize<'de> for UncheckedConsi
         Ok(UncheckedConsignment(Consignment {
             version: shadow.version,
             transfer: shadow.transfer,
-            terminals: shadow.terminals,
             genesis: shadow.genesis,
             bundles: shadow.bundles,
         }))

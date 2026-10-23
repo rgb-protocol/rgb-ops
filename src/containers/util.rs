@@ -19,13 +19,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{iter, slice};
-
-use amplify::confinement::{NonEmptyVec, U16};
-use rgb::GraphSeal;
 use strict_encoding::DefaultBasedStrictDumb;
 
-use crate::containers::BuilderSeal;
 use crate::LIB_NAME_RGB_OPS;
 
 /// Version of the [`Consignment`](crate::containers::Consignment) container.
@@ -53,30 +48,3 @@ pub enum ConsignmentVer {
 }
 
 impl DefaultBasedStrictDumb for ConsignmentVer {}
-
-/// Non-empty list of history terminal seals.
-///
-/// Each seal is a [`BuilderSeal`]: either concealed (only the secret hash is
-/// known, for blinded transfers) or revealed (the full graph seal is known,
-/// for witness-vout transfers).
-#[derive(Wrapper, WrapperMut, Clone, PartialEq, Eq, Hash, Debug, From)]
-#[wrapper(Deref)]
-#[wrapper_mut(DerefMut)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_OPS, dumb = Self(NonEmptyVec::with(BuilderSeal::strict_dumb())))]
-#[cfg_attr(
-    feature = "serde",
-    derive(Serialize, Deserialize),
-    serde(crate = "serde_crate", rename_all = "camelCase")
-)]
-pub struct TerminalSeals(
-    #[cfg_attr(feature = "serde", serde(with = "strict_encoding::serde_helpers::confined"))]
-    NonEmptyVec<BuilderSeal<GraphSeal>, U16>,
-);
-
-impl<'a> IntoIterator for &'a TerminalSeals {
-    type Item = BuilderSeal<GraphSeal>;
-    type IntoIter = iter::Copied<slice::Iter<'a, BuilderSeal<GraphSeal>>>;
-
-    fn into_iter(self) -> Self::IntoIter { self.0.iter().copied() }
-}
