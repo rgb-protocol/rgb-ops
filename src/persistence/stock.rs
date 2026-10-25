@@ -36,8 +36,8 @@ use rgb::commit_verify::mpc::{self, MerkleBlock};
 use rgb::commit_verify::Conceal;
 use rgb::dbc::{Anchor, Proof};
 use rgb::validation::{
-    OpoutsDagData, OpoutsDagInfo, ResolveWitness, SchemaDefinition, SchemaRules, Scripts, SpvProof,
-    TypeLibs, UnsafeHistoryMap, WitnessOrdProvider, WitnessResolverError, WitnessStatus,
+    OpsDag, ResolveWitness, SchemaDefinition, SchemaRules, Scripts, SpvProof, TypeLibs,
+    UnsafeHistoryMap, WitnessOrdProvider, WitnessResolverError, WitnessStatus,
 };
 use rgb::vm::WitnessOrd;
 use rgb::{
@@ -71,18 +71,18 @@ use crate::MergeReveal;
 
 pub type ContractAssignments = HashMap<OutputSeal, HashMap<Opout, AllocatedState>>;
 
-type SortedBundlesWithDag = (Vec<WitnessBundle>, Option<OpoutsDagData>);
+type SortedBundlesWithDag = (Vec<WitnessBundle>, Option<OpsDag>);
 
-type ConsignmentWithOptDag<const TRANSFER: bool> = (Consignment<TRANSFER>, Option<OpoutsDagData>);
+type ConsignmentWithOptDag<const TRANSFER: bool> = (Consignment<TRANSFER>, Option<OpsDag>);
 
 /// What the composition helpers hand back: the consignment, its DAG when one
 /// was asked for, and the SPV proofs retrieved on the way.
 type ComposedConsignment<const TRANSFER: bool> =
-    (Consignment<TRANSFER>, Option<OpoutsDagData>, RetrievedSpvProofs);
+    (Consignment<TRANSFER>, Option<OpsDag>, RetrievedSpvProofs);
 
 /// Consignment, its operations DAG and the retrieved SPV proofs
 pub type ConsignmentWithDag<const TRANSFER: bool> =
-    (Consignment<TRANSFER>, OpoutsDagData, RetrievedSpvProofs);
+    (Consignment<TRANSFER>, OpsDag, RetrievedSpvProofs);
 
 /// The SPV proofs a composition retrieved from its resolver, by witness id.
 ///
@@ -109,7 +109,7 @@ struct ConsignParams<'a> {
     /// See [`Stock::transfer`].
     spv_resolver: Option<&'a dyn ResolveSpvProof>,
     /// Whether to also build the operations DAG.
-    build_opouts_dag: bool,
+    build_ops_dag: bool,
 }
 
 /// Outcome of [`Stock::update_witnesses`].
@@ -526,7 +526,7 @@ impl<S: RgbStore> Stock<S> {
             secret_seals: &[],
             witness_id: None,
             spv_resolver: None,
-            build_opouts_dag: false,
+            build_ops_dag: false,
         })
         // no resolver is passed, so nothing is ever retrieved to hand back
         .map(|(c, ..)| c)
@@ -561,12 +561,14 @@ impl<S: RgbStore> Stock<S> {
             secret_seals: secret_seals.as_ref(),
             witness_id,
             spv_resolver,
-            build_opouts_dag: false,
+            build_ops_dag: false,
         })
         .map(|(c, _, p)| (c, p))
     }
 
     /// See [`Stock::transfer`] for `spv_resolver`.
+    ///
+    /// The returned DAG has no duplicated edges and each opout is spent at most once.
     pub fn transfer_with_dag(
         &self,
         contract_id: ContractId,
@@ -581,38 +583,62 @@ impl<S: RgbStore> Stock<S> {
             secret_seals: secret_seals.as_ref(),
             witness_id,
             spv_resolver,
-            build_opouts_dag: true,
+            build_ops_dag: true,
         })
-        .map(|(c, d, p)| (c, d.expect("build_opouts_dag=true"), p))
+        .map(|(c, d, p)| (c, d.expect("build_ops_dag=true"), p))
     }
 
+    /// Sorts the bundles so that each follows the ones it spends from.
+    ///
+    /// When `build_ops_dag` is set, the returned DAG has no duplicated edges and each
+    /// opout is spent at most once. A second spender of an opout is a
+    /// [`ConsignError::DoubleSpend`].
     fn sort_bundles(
         &self,
         bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
         contract_id: ContractId,
-        build_opouts_dag: bool,
+        build_ops_dag: bool,
         genesis: &Genesis,
     ) -> Result<SortedBundlesWithDag, StockError<S, ConsignError>> {
-        let mut dag_info = None;
-        if build_opouts_dag {
-            dag_info = Some(OpoutsDagInfo::new());
-        }
-        if let Some(ref mut dag_info) = dag_info {
-            dag_info.register_outputs(genesis, &genesis.id());
-        }
+        let bundles = self.order_bundles(bundles, contract_id)?;
+        let dag = if build_ops_dag {
+            let transitions = bundles
+                .iter()
+                .flat_map(|wb| wb.bundle.known_transitions.iter());
+            Some(Self::build_ops_dag(genesis, transitions)?)
+        } else {
+            None
+        };
+        Ok((bundles, dag))
+    }
 
+    /// Builds the DAG connecting each transition once, failing if an opout is spent twice.
+    fn build_ops_dag<'a>(
+        genesis: &Genesis,
+        transitions: impl IntoIterator<Item = &'a KnownTransition>,
+    ) -> Result<OpsDag, ConsignError> {
+        let mut dag = OpsDag::new();
+        dag.register_op(genesis.id());
+        let mut spent = HashSet::new();
+        for KnownTransition { transition, opid } in transitions {
+            for input in &transition.inputs {
+                if !spent.insert(input) {
+                    return Err(ConsignError::DoubleSpend(*opid, input));
+                }
+            }
+            dag.connect_transition(transition, *opid);
+        }
+        Ok(dag)
+    }
+
+    fn order_bundles(
+        &self,
+        bundles: BTreeMap<BundleId, (WitnessBundle, u32)>,
+        contract_id: ContractId,
+    ) -> Result<Vec<WitnessBundle>, StockError<S, ConsignError>> {
         let bundles_len = bundles.len();
         if bundles_len <= 1 {
-            let bundles = bundles.into_values().map(|(b, _)| b).collect::<Vec<_>>();
-            if let Some(ref mut dag_info) = dag_info {
-                dag_info.build_dag(
-                    &bundles
-                        .iter()
-                        .flat_map(|wb| wb.bundle.known_transitions.iter())
-                        .collect::<Vec<_>>(),
-                );
-            }
-            return Ok((bundles, dag_info.map(|d| d.to_opouts_dag_data())));
+            return Ok(bundles.into_values().map(|(b, _)| b).collect());
         }
 
         // Pre-sort by witness height for efficiency
@@ -627,14 +653,8 @@ impl<S: RgbStore> Stock<S> {
             .map(|(i, (bundle_id, (_, _)))| (*bundle_id, i))
             .collect::<HashMap<_, _>>();
         'outer: for (i, (_, (witness_bundle, _))) in bundles_with_height.iter().enumerate() {
-            for KnownTransition { transition, opid } in &witness_bundle.bundle.known_transitions {
-                if let Some(ref mut dag_info) = dag_info {
-                    dag_info.register_outputs(transition, opid);
-                }
+            for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
                 for input in &transition.inputs {
-                    if let Some(ref mut dag_info) = dag_info {
-                        dag_info.connect_input_to_outputs_by_opid(input, opid);
-                    }
                     if input.op != contract_id {
                         let input_bundle_id = self.bundle_id_for_op(input.op)?;
                         // ignore missing input bundles (e.g. can happen in case of replace)
@@ -649,25 +669,18 @@ impl<S: RgbStore> Stock<S> {
             }
         }
         if !needs_reordering {
-            let bundles = bundles_with_height
+            return Ok(bundles_with_height
                 .into_iter()
                 .map(|(_, (wb, _))| wb)
-                .collect::<Vec<_>>();
-            return Ok((bundles, dag_info.map(|d| d.to_opouts_dag_data())));
+                .collect());
         }
 
         // Topological sort
         let mut known_bundle_dependencies: HashMap<BundleId, HashSet<BundleId>> =
             HashMap::with_capacity(bundles_len);
         for (bundle_id, (witness_bundle, _)) in &bundles_with_height {
-            for KnownTransition { transition, opid } in &witness_bundle.bundle.known_transitions {
-                if let Some(ref mut dag_info) = dag_info {
-                    dag_info.register_outputs(transition, opid);
-                }
+            for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
                 for input in &transition.inputs {
-                    if let Some(ref mut dag_info) = dag_info {
-                        dag_info.connect_input_to_outputs_by_opid(input, opid);
-                    }
                     if input.op != contract_id {
                         let input_bundle_id = self.bundle_id_for_op(input.op)?;
                         if bundle_positions.contains_key(&input_bundle_id)
@@ -712,7 +725,7 @@ impl<S: RgbStore> Stock<S> {
                 return Err(StockError::BundlesInconsistency);
             }
         }
-        Ok((sorted_bundles, dag_info.map(|d| d.to_opouts_dag_data())))
+        Ok(sorted_bundles)
     }
 
     fn consign<const TRANSFER: bool>(
@@ -935,7 +948,7 @@ impl<S: RgbStore> Stock<S> {
         self.load_imported_schema(genesis.schema_id)?;
 
         let (sorted_bundles, dag) =
-            self.sort_bundles(bundles, contract_id, params.build_opouts_dag, &genesis)?;
+            self.sort_bundles(bundles, contract_id, params.build_ops_dag, &genesis)?;
 
         let bundles =
             Confined::try_from_iter(sorted_bundles).map_err(|_| ConsignError::TooManyBundles)?;
@@ -980,12 +993,14 @@ impl<S: RgbStore> Stock<S> {
             secret_seals: secret_seals.as_ref(),
             witness_id: None,
             spv_resolver,
-            build_opouts_dag: false,
+            build_ops_dag: false,
         })
         .map(|(c, _, p)| (c, p))
     }
 
     /// See [`Stock::transfer`] for `spv_resolver`.
+    ///
+    /// The returned DAG has no duplicated edges and each opout is spent at most once.
     pub fn transfer_from_fascia_with_dag(
         &self,
         contract_id: ContractId,
@@ -1000,9 +1015,9 @@ impl<S: RgbStore> Stock<S> {
             secret_seals: secret_seals.as_ref(),
             witness_id: None,
             spv_resolver,
-            build_opouts_dag: true,
+            build_ops_dag: true,
         })
-        .map(|(c, d, p)| (c, d.expect("build_opouts_dag=true"), p))
+        .map(|(c, d, p)| (c, d.expect("build_ops_dag=true"), p))
     }
 
     fn consign_from_fascia(
@@ -3101,6 +3116,49 @@ mod test {
             .opouts_by_secrets(contract_id, [SecretSeal::from([0xFF; 32])])
             .unwrap()
             .is_empty());
+    }
+
+    fn spending_transition(spent: &[Opout], nonce: u64) -> KnownTransition {
+        let mut transition = Transition::strict_dumb();
+        transition.inputs = Inputs::from(NonEmptyOrdSet::from_iter_checked(spent.iter().copied()));
+        transition.nonce = nonce;
+        KnownTransition::new(transition.id(), transition)
+    }
+
+    #[test]
+    fn ops_dag_has_one_edge_per_spent_opout() {
+        let genesis = Genesis::strict_dumb();
+        let genesis_opid = genesis.id();
+        let ty = AssignmentType::strict_dumb();
+        let first = spending_transition(&[Opout::new(genesis_opid, ty, 0)], 0);
+        let second = spending_transition(
+            &[Opout::new(first.opid, ty, 0), Opout::new(genesis_opid, ty, 1)],
+            1,
+        );
+
+        let dag = SqliteStock::build_ops_dag(&genesis, [&first, &second]).unwrap();
+        assert_eq!(dag.node_count(), 3);
+        assert_eq!(dag.edge_count(), 3);
+        let spent = dag
+            .spent_opouts(dag.op_node(&second.opid).unwrap())
+            .map(|(opout, _)| opout)
+            .collect::<HashSet<_>>();
+        assert_eq!(spent, set![Opout::new(first.opid, ty, 0), Opout::new(genesis_opid, ty, 1)]);
+    }
+
+    /// An opout spent by two different transitions makes the DAG - and the
+    /// consignment it describes - inconsistent, so building it must fail.
+    #[test]
+    fn ops_dag_rejects_an_opout_spent_twice() {
+        let genesis = Genesis::strict_dumb();
+        let spent = Opout::new(genesis.id(), AssignmentType::strict_dumb(), 0);
+        let first = spending_transition(&[spent], 0);
+        let second = spending_transition(&[spent], 1);
+        assert_ne!(first.opid, second.opid);
+
+        let err = SqliteStock::build_ops_dag(&genesis, [&first, &second]).unwrap_err();
+        assert!(matches!(err, ConsignError::DoubleSpend(opid, opout)
+            if opid == second.opid && opout == spent));
     }
 
     /// Two transitions spending the same opout - what a store holds while a

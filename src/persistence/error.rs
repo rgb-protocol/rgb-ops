@@ -142,6 +142,9 @@ pub enum ConsignError {
 
     /// none of the transitions of bundle {0} is requested by the consignment.
     NoRequestedTransition(BundleId),
+
+    /// the opout {1} is spent more than once, the second time by transition {0}.
+    DoubleSpend(OpId, Opout),
 }
 
 impl<S: RgbStore> From<ConsignError> for StockError<S, ConsignError> {
