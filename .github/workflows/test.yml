@@ -32,7 +32,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: taiki-e/install-action@wasm-pack
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Test in headless Chrome
