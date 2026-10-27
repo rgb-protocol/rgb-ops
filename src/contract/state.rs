@@ -675,3 +675,284 @@ impl ContractStateEvolve for ValidationContractState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use amplify::confinement::{NonEmptyVec, SmallBlob, U16};
+    use rgb::bitcoin::hashes::Hash;
+    use rgb::vm::ContractOp;
+    use rgb::{
+        AssignmentDetails, FungibleType, Genesis, GenesisSeal, GlobalDetails, GlobalState,
+        GlobalStateSchema, GraphSeal, OwnedStateSchema, Transition, TransitionType,
+    };
+    use strict_encoding::{FieldName, StrictDumb};
+
+    use super::*;
+
+    const CAPPED: GlobalStateType = GlobalStateType::with(1);
+    const WIDE: GlobalStateType = GlobalStateType::with(2);
+    const ABSENT: GlobalStateType = GlobalStateType::with(3);
+    const RIGHT: AssignmentType = AssignmentType::with(10);
+    const AMOUNT: AssignmentType = AssignmentType::with(11);
+    const DATA: AssignmentType = AssignmentType::with(12);
+    /// How many `CAPPED` entries the contract sees at a time.
+    const CAPPED_LIMIT: u32 = 2;
+
+    type Entry = (GlobalOrd, RevealedData);
+
+    /// A schema with two global types and an owned type of each kind.
+    fn schema() -> Schema {
+        let global = |name: FieldName, max_items: u32| GlobalDetails {
+            global_state_schema: GlobalStateSchema {
+                sem_id: strict_dumb!(),
+                max_items: u24::with(max_items),
+            },
+            name,
+        };
+        let owned = |name: FieldName, owned_state_schema: OwnedStateSchema| AssignmentDetails {
+            owned_state_schema,
+            name,
+            default_transition: TransitionType::with(1),
+        };
+        Schema {
+            ffv: Default::default(),
+            name: tn!("ValidationStateTest"),
+            meta_types: Default::default(),
+            global_types: tiny_bmap! {
+                CAPPED => global(fname!("capped"), CAPPED_LIMIT),
+                WIDE => global(fname!("wide"), 100),
+            },
+            owned_types: tiny_bmap! {
+                RIGHT => owned(fname!("right"), OwnedStateSchema::Declarative),
+                AMOUNT => owned(
+                    fname!("amount"),
+                    OwnedStateSchema::Fungible(FungibleType::Unsigned64Bit),
+                ),
+                DATA => owned(fname!("data"), OwnedStateSchema::Structured(strict_dumb!())),
+            },
+            genesis: Default::default(),
+            transitions: Default::default(),
+            default_assignment: Default::default(),
+        }
+    }
+
+    fn data(byte: u8) -> RevealedData { RevealedData::new(SmallBlob::from_checked(vec![byte])) }
+
+    /// Global state with one entry for each `(type, byte)` pair, in order.
+    fn globals(entries: &[(GlobalStateType, u8)]) -> GlobalState {
+        let mut globals = GlobalState::default();
+        for &(ty, byte) in entries {
+            globals.add_state(ty, data(byte)).unwrap();
+        }
+        globals
+    }
+
+    /// One assignment of each owned type to each of `seals`.
+    fn assignments<Seal: ExposedSeal>(seals: &[Seal]) -> Assignments<Seal> {
+        fn non_empty<A>(items: impl IntoIterator<Item = A>) -> NonEmptyVec<A, U16> {
+            NonEmptyVec::try_from_iter(items).unwrap()
+        }
+        let rights = seals
+            .iter()
+            .map(|seal| Assign::revealed(*seal, VoidState::default()));
+        let amounts = seals
+            .iter()
+            .map(|seal| Assign::revealed(*seal, RevealedValue::from(10u64)));
+        let data = seals.iter().map(|seal| Assign::revealed(*seal, data(0xd0)));
+        let mut assignments = Assignments::default();
+        assignments
+            .insert(RIGHT, TypedAssigns::Declarative(non_empty(rights).into()))
+            .unwrap();
+        assignments
+            .insert(AMOUNT, TypedAssigns::Fungible(non_empty(amounts).into()))
+            .unwrap();
+        assignments
+            .insert(DATA, TypedAssigns::Structured(non_empty(data).into()))
+            .unwrap();
+        assignments
+    }
+
+    fn genesis(schema: &Schema) -> Genesis {
+        let txid = Txid::from_byte_array([0x01; 32]);
+        let mut genesis = Genesis::strict_dumb();
+        genesis.schema_id = schema.schema_id();
+        genesis.globals = globals(&[(CAPPED, 0x00), (WIDE, 0x01), (WIDE, 0x02)]);
+        genesis.assignments = assignments(&[
+            GenesisSeal::with_blinding(txid, 0u32, 1),
+            GenesisSeal::with_blinding(txid, 1u32, 2),
+        ]);
+        genesis
+    }
+
+    /// A transition with the global state `entries` and `outputs` outputs of
+    /// each owned type.
+    fn transition(
+        contract_id: ContractId,
+        nonce: u64,
+        entries: &[(GlobalStateType, u8)],
+        outputs: u32,
+    ) -> Transition {
+        let seals = (0..outputs)
+            .map(|vout| GraphSeal::with_blinded_vout(vout, nonce + u64::from(vout)))
+            .collect::<Vec<_>>();
+        let mut transition = Transition::strict_dumb();
+        transition.contract_id = contract_id;
+        transition.nonce = nonce;
+        transition.globals = globals(entries);
+        transition.assignments = assignments(&seals);
+        transition
+    }
+
+    /// Evolves a filtered state and a validation state with the same
+    /// operations, in the same order.
+    fn evolve_both(schema: &Schema) -> (FilteredContractState, ValidationContractState) {
+        let genesis = genesis(schema);
+        let contract_id = genesis.contract_id();
+        let first = transition(contract_id, 7, &[(CAPPED, 0x10), (WIDE, 0x11)], 3);
+        let second = transition(contract_id, 3, &[(CAPPED, 0x20), (CAPPED, 0x21), (WIDE, 0x22)], 2);
+        let third = transition(contract_id, 5, &[(WIDE, 0x30)], 1);
+        let witness = |byte: u8| (Txid::from_byte_array([byte; 32]), BundleId::from([byte; 32]));
+        let (first_witness, first_bundle) = witness(0x11);
+        let (second_witness, second_bundle) = witness(0x22);
+        let ops = [
+            OrdOpRef::Genesis(&genesis),
+            OrdOpRef::Transition(&first, first_witness, first_bundle),
+            OrdOpRef::Transition(&second, second_witness, second_bundle),
+            // A second transition in the same witness and bundle.
+            OrdOpRef::Transition(&third, second_witness, second_bundle),
+        ];
+        let mut filtered = FilteredContractState::init((schema, contract_id));
+        let mut validation = ValidationContractState::init((schema, contract_id));
+        for op in ops {
+            filtered.evolve_state(op).unwrap();
+            validation.evolve_state(op).unwrap();
+        }
+        (filtered, validation)
+    }
+
+    fn entry(entry: impl Borrow<GlobalStateEntry>) -> Entry {
+        let entry = entry.borrow();
+        (*entry.ord(), entry.data().clone())
+    }
+
+    /// The entries of `ty`, in the order the RGB VM sees them, or the type
+    /// when it is unknown.
+    fn entries(
+        state: &impl ContractStateAccess,
+        ty: GlobalStateType,
+    ) -> Result<Vec<Entry>, GlobalStateType> {
+        state
+            .global(ty)
+            .map(|iter| iter.map(entry).collect())
+            .map_err(|err| err.0)
+    }
+
+    /// The entry at each depth of `ty`, from 0 to `max`.
+    fn depths(
+        state: &impl ContractStateAccess,
+        ty: GlobalStateType,
+        max: usize,
+    ) -> Vec<Option<Entry>> {
+        let iter = state.global(ty).expect("a schema type");
+        (0..=max)
+            .map(|depth| iter.at_depth(depth).map(entry))
+            .collect()
+    }
+
+    fn count(state: &impl ContractStateAccess, ty: GlobalStateType) -> usize {
+        state.global(ty).expect("a schema type").count()
+    }
+
+    #[test]
+    fn validation_state_answers_global_queries_as_filtered_state() {
+        let schema = schema();
+        let (filtered, validation) = evolve_both(&schema);
+
+        for ty in [CAPPED, WIDE] {
+            let expected = entries(&filtered, ty).unwrap();
+            assert_eq!(entries(&validation, ty).unwrap(), expected);
+            assert_eq!(count(&validation, ty), expected.len());
+            assert_eq!(count(&filtered, ty), expected.len());
+            let max = expected.len() + 1;
+            assert_eq!(depths(&validation, ty, max), depths(&filtered, ty, max));
+        }
+        // The schema limit leaves 2 of the 4 entries of the capped type.
+        assert_eq!(entries(&validation, CAPPED).unwrap().len(), CAPPED_LIMIT as usize);
+        assert_eq!(entries(&validation, WIDE).unwrap().len(), 5);
+        assert_eq!(entries(&validation, ABSENT), Err(ABSENT));
+        assert_eq!(entries(&filtered, ABSENT), Err(ABSENT));
+        assert_eq!(validation.0.filter, filtered.filter);
+    }
+
+    #[test]
+    fn validation_state_keeps_no_owned_state() {
+        let schema = schema();
+        let (filtered, validation) = evolve_both(&schema);
+
+        // The operations assign 2 + 3 + 2 + 1 outputs of each owned type.
+        assert_eq!(filtered.unfiltered.rights.len(), 8);
+        assert_eq!(filtered.unfiltered.fungibles.len(), 8);
+        assert_eq!(filtered.unfiltered.data.len(), 8);
+        let unfiltered = &validation.0.unfiltered;
+        assert!(unfiltered.rights.is_empty());
+        assert!(unfiltered.fungibles.is_empty());
+        assert!(unfiltered.data.is_empty());
+    }
+
+    fn validation_state() -> ValidationContractState {
+        let schema = schema();
+        ValidationContractState::init((&schema, genesis(&schema).contract_id()))
+    }
+
+    fn outpoint() -> Outpoint { Outpoint::new(Txid::from_byte_array([0x11; 32]), 0) }
+
+    #[test]
+    #[should_panic(expected = "reads no owned state")]
+    fn validation_state_answers_no_rights_query() { validation_state().rights(outpoint(), RIGHT); }
+
+    #[test]
+    #[should_panic(expected = "reads no owned state")]
+    fn validation_state_answers_no_fungible_query() {
+        validation_state().fungible(outpoint(), AMOUNT).count();
+    }
+
+    #[test]
+    #[should_panic(expected = "reads no owned state")]
+    fn validation_state_answers_no_data_query() {
+        validation_state().data(outpoint(), DATA).count();
+    }
+
+    /// Whether an opcode of the RGB VM reads the owned state of the contract,
+    /// which [`ValidationContractState`] does not keep.
+    ///
+    /// The match names every opcode, so that an rgb-consensus release which
+    /// adds one stops this module from compiling until the new opcode is
+    /// checked.
+    fn reads_owned_contract_state(op: &ContractOp<ValidationContractState>) -> bool {
+        match op {
+            // These read the global state of the contract.
+            ContractOp::CnC(..) | ContractOp::LdC(..) => false,
+            // These read the operation being validated, or no state at all.
+            ContractOp::CnP(..)
+            | ContractOp::CnS(..)
+            | ContractOp::CnG(..)
+            | ContractOp::LdP(..)
+            | ContractOp::LdS(..)
+            | ContractOp::LdF(..)
+            | ContractOp::LdG(..)
+            | ContractOp::LdM(..)
+            | ContractOp::Svs(..)
+            | ContractOp::Sas(..)
+            | ContractOp::Sps(..)
+            | ContractOp::Vts(..)
+            | ContractOp::Pma(..)
+            | ContractOp::Fail(..) => false,
+        }
+    }
+
+    #[test]
+    fn rgb_vm_reads_no_owned_contract_state() {
+        let op = ContractOp::Fail(0xc7, std::marker::PhantomData);
+        assert!(!reads_owned_contract_state(&op));
+    }
+}
