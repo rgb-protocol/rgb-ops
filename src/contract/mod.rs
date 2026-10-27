@@ -41,7 +41,7 @@ pub use merge_reveal::{MergeReveal, MergeRevealError};
 use rgb::vm::OrdOpRef;
 use rgb::{OpId, TransitionType, Txid};
 pub use schema::{IssuerWrapper, SchemaWrapper};
-pub(crate) use state::{global_ord, GlobalStateIter};
+pub(crate) use state::{global_ord, GlobalStateIter, ValidationContractState};
 pub use state::{
     ContractStateRead, FilteredContractState, GlobalStateReadError, UnfilteredContractState,
     UnfilteredGlobalState,

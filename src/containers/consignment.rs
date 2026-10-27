@@ -54,7 +54,9 @@ use crate::containers::anchors::SpvProof;
 use crate::containers::external_anchors::{
     AnchorResolverError, CheckedAnchorResolver, ResolveAnchor,
 };
-use crate::contract::{ContractData, FilteredContractState, UnfilteredContractState};
+use crate::contract::{
+    ContractData, FilteredContractState, UnfilteredContractState, ValidationContractState,
+};
 use crate::info::ContractInfo;
 use crate::stl::BridgeLocation;
 use crate::{SecretSeal, LIB_NAME_RGB_OPS};
@@ -454,13 +456,12 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
             ))));
         }
 
-        let pending =
-            Validator::<FilteredContractState<UnfilteredContractState>, _>::validate_deterministic(
-                &self,
-                rules,
-                (rules.schema(), self.contract_id()),
-                validation_config,
-            )?;
+        let pending = Validator::<ValidationContractState, _>::validate_deterministic(
+            &self,
+            rules,
+            (rules.schema(), self.contract_id()),
+            validation_config,
+        )?;
 
         Ok(PendingConsignment {
             pending,

@@ -33,6 +33,11 @@
 //! invalidated operations which decide what of it is visible, and answers
 //! [`ContractStateAccess`]/[`ContractStateRead`] queries over the result.
 //!
+//! Consignment validation keeps less than that: the RGB VM reads only the
+//! global state of a contract, so while it walks a consignment the validator
+//! keeps the global state, through the same code, and no owned state
+//! (`ValidationContractState`).
+//!
 //! This is the store-less sibling of
 //! [`ContractStateReader`](crate::persistence::ContractStateReader), which
 //! answers the same traits by reading persisted rows. The two deliberately
@@ -45,6 +50,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
+use std::iter;
 use std::rc::Rc;
 
 use amplify::confinement::{LargeOrdMap, LargeOrdSet, TinyOrdMap};
@@ -275,6 +281,28 @@ impl UnfilteredContractState {
     pub(crate) fn add_operation(&mut self, op: OrdOpRef) {
         let opid = op.id();
 
+        self.add_global_state(opid, op);
+
+        let bundle_id = op.bundle_id();
+        let witness_id = op.witness_id();
+        match op.assignments() {
+            AssignmentsRef::Genesis(assignments) => {
+                self.add_assignments(bundle_id, witness_id, opid, assignments)
+            }
+            AssignmentsRef::Graph(assignments) => {
+                self.add_assignments(bundle_id, witness_id, opid, assignments)
+            }
+        }
+    }
+
+    /// Adds the global state of `op`, whose id is `opid`, and none of its owned
+    /// state.
+    ///
+    /// # Panics
+    ///
+    /// If the operation has global state of a type which the schema does not
+    /// define. Schema validation of the operation rules this out.
+    fn add_global_state(&mut self, opid: OpId, op: OrdOpRef) {
         for (ty, state) in op.globals() {
             let map = self
                 .global
@@ -290,17 +318,6 @@ impl UnfilteredContractState {
                 map.known
                     .insert(out, s.clone())
                     .expect("contract global state exceeded 2^32 items, which is unrealistic");
-            }
-        }
-
-        let bundle_id = op.bundle_id();
-        let witness_id = op.witness_id();
-        match op.assignments() {
-            AssignmentsRef::Genesis(assignments) => {
-                self.add_assignments(bundle_id, witness_id, opid, assignments)
-            }
-            AssignmentsRef::Graph(assignments) => {
-                self.add_assignments(bundle_id, witness_id, opid, assignments)
             }
         }
     }
@@ -361,10 +378,12 @@ impl UnfilteredContractState {
 /// read through the witness ords and the set of invalidated operations which
 /// decide what of it counts.
 ///
-/// Used *during validation*, where it accumulates operations via
-/// [`ContractStateEvolve`] with no backing store and answers the RGB VM's
-/// [`ContractStateAccess`] queries, and to read the state of a consignment
-/// which has not been consumed into a store yet.
+/// It can accumulate operations via [`ContractStateEvolve`] with no backing
+/// store and answer the RGB VM's [`ContractStateAccess`] queries, and it is used
+/// to read the state of a consignment which has not been consumed into a store
+/// yet. Consignment validation in this crate does not use it: there the
+/// validator keeps only the global state, which is all the RGB VM reads, so it
+/// does not hold a record for every output of the consignment.
 ///
 /// The generic parameter lets the unfiltered state be either owned or borrowed.
 pub struct FilteredContractState<M: Borrow<UnfilteredContractState> = UnfilteredContractState> {
@@ -468,6 +487,15 @@ impl ContractStateEvolve for FilteredContractState<UnfilteredContractState> {
     }
 
     fn evolve_state(&mut self, op: OrdOpRef) -> Result<(), Self::Error> {
+        self.add_tentative_witness(op);
+        self.unfiltered.add_operation(op);
+        Ok(())
+    }
+}
+
+impl FilteredContractState<UnfilteredContractState> {
+    /// Records the witness of `op`, if it has one, as tentative.
+    fn add_tentative_witness(&mut self, op: OrdOpRef) {
         if let OrdOpRef::Transition(_, witness_id, _) = op {
             // The witness ordering is not known yet: the resolver only runs in the
             // second validation phase. Tentative is the neutral placeholder, since
@@ -476,8 +504,6 @@ impl ContractStateEvolve for FilteredContractState<UnfilteredContractState> {
             // newer version anyway and even if it is known we have to replace it
             self.filter.insert(witness_id, WitnessOrd::Tentative);
         }
-        self.unfiltered.add_operation(op);
-        Ok(())
     }
 }
 
@@ -568,5 +594,84 @@ impl<M: Borrow<UnfilteredContractState>> ContractStateRead for FilteredContractS
             .filter(move |assignment| type_id.is_none_or(|ty| assignment.opout.ty == ty))
             .cloned()
             .map(Ok)
+    }
+}
+
+// ----- validation state ------------------------------------------------------
+
+/// Contract state the validator keeps while it walks a consignment.
+///
+/// The RGB VM reads the state of the contract only through the `CnC` and `LdC`
+/// opcodes, with [`ContractStateAccess::global`], and both read global state.
+/// Every other opcode reads the operation being validated (its inputs, its own
+/// global and owned state, its metadata and its signature), and an unknown
+/// opcode fails. So nothing reads the owned state of the contract while a
+/// consignment is validated. This holds for the opcodes of the rgb-consensus
+/// version in use: a test lists them all, so a release which adds an opcode
+/// stops the tests from building until the new opcode is checked here.
+///
+/// This state therefore keeps the global state exactly as
+/// [`FilteredContractState`] does, through the same code, and keeps no owned
+/// state. A [`FilteredContractState`] holds an [`OutputAssignment`] for every
+/// revealed output of the consignment until the validation ends: in a
+/// transfer that is mostly outputs this is a large part of the memory that
+/// phase one uses.
+///
+/// # Panics
+///
+/// The owned-state queries of [`ContractStateAccess`] panic, since the RGB VM
+/// does not make them.
+pub(crate) struct ValidationContractState(FilteredContractState<UnfilteredContractState>);
+
+impl Debug for ValidationContractState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ValidationContractState { .. }")
+    }
+}
+
+/// Stands for an owned-state query on [`ValidationContractState`], which keeps
+/// no owned state because the RGB VM never reads it.
+fn owned_state_is_not_kept<T>() -> T {
+    unreachable!("the RGB VM reads no owned state of the contract during validation")
+}
+
+impl ContractStateAccess for ValidationContractState {
+    fn global(
+        &self,
+        ty: GlobalStateType,
+    ) -> Result<impl GlobalsIter<Item = impl Borrow<GlobalStateEntry>>, UnknownGlobalStateType>
+    {
+        self.0.global(ty)
+    }
+
+    fn rights(&self, _outpoint: Outpoint, _ty: AssignmentType) -> u32 { owned_state_is_not_kept() }
+
+    fn fungible(
+        &self,
+        _outpoint: Outpoint,
+        _ty: AssignmentType,
+    ) -> impl DoubleEndedIterator<Item = FungibleState> {
+        owned_state_is_not_kept::<iter::Empty<FungibleState>>()
+    }
+
+    fn data(
+        &self,
+        _outpoint: Outpoint,
+        _ty: AssignmentType,
+    ) -> impl DoubleEndedIterator<Item = impl Borrow<RevealedData>> {
+        owned_state_is_not_kept::<iter::Empty<RevealedData>>()
+    }
+}
+
+impl ContractStateEvolve for ValidationContractState {
+    type Context<'ctx> = (&'ctx Schema, ContractId);
+    type Error = Infallible;
+
+    fn init(context: Self::Context<'_>) -> Self { Self(FilteredContractState::init(context)) }
+
+    fn evolve_state(&mut self, op: OrdOpRef) -> Result<(), Self::Error> {
+        self.0.add_tentative_witness(op);
+        self.0.unfiltered.add_global_state(op.id(), op);
+        Ok(())
     }
 }
