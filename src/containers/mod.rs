@@ -34,6 +34,8 @@ pub mod legacy;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
+#[cfg(test)]
+mod validation_e2e;
 
 pub use anchors::{SealWitness, SealWitnessMergeError, SpvProof, WitnessBundle};
 pub use consignment::{
