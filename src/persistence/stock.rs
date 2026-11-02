@@ -637,6 +637,22 @@ impl<S: RgbStore> Stock<S> {
         let mut bundles_with_height = bundles.into_iter().collect::<Vec<_>>();
         bundles_with_height.sort_by_key(|(_, (_, num))| *num);
 
+        // the bundle of an input's operation: one of the bundles being sorted (e.g. an input
+        // assigned by another transition of the same bundle, not stored yet) or a stored one
+        let op_bundles = bundles_with_height
+            .iter()
+            .flat_map(|(bundle_id, (wb, _))| {
+                wb.bundle
+                    .known_transitions
+                    .iter()
+                    .map(move |kt| (kt.opid, *bundle_id))
+            })
+            .collect::<HashMap<_, _>>();
+        let input_bundle_id = |opid: OpId| match op_bundles.get(&opid) {
+            Some(bundle_id) => Ok(*bundle_id),
+            None => self.bundle_id_for_op(opid),
+        };
+
         // Dependency violation detection
         let mut needs_reordering = false;
         let bundle_positions = bundles_with_height
@@ -648,7 +664,7 @@ impl<S: RgbStore> Stock<S> {
             for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
                 for input in &transition.inputs {
                     if input.op != contract_id {
-                        let input_bundle_id = self.bundle_id_for_op(input.op)?;
+                        let input_bundle_id = input_bundle_id(input.op)?;
                         // ignore missing input bundles (e.g. can happen in case of replace)
                         if let Some(&input_pos) = bundle_positions.get(&input_bundle_id) {
                             if input_pos > i {
@@ -674,7 +690,7 @@ impl<S: RgbStore> Stock<S> {
             for KnownTransition { transition, .. } in &witness_bundle.bundle.known_transitions {
                 for input in &transition.inputs {
                     if input.op != contract_id {
-                        let input_bundle_id = self.bundle_id_for_op(input.op)?;
+                        let input_bundle_id = input_bundle_id(input.op)?;
                         if bundle_positions.contains_key(&input_bundle_id)
                             && input_bundle_id != *bundle_id
                         {
