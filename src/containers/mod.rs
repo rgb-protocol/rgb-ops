@@ -36,7 +36,7 @@ pub mod legacy;
 pub(crate) mod test_fixtures;
 
 pub use anchors::{SealWitness, SealWitnessMergeError, SpvProof, WitnessBundle};
-pub use claim::{CheckedClaimResolver, ClaimResolverError, ResolveClaim};
+pub use claim::{CheckedClaimResolver, ClaimResolverError, LockId, ResolveClaim};
 pub use consignment::{
     AssignmentMatch, Consignment, ConsignmentConstraintError, ConsignmentExt, ConsignmentId,
     ConsignmentParseError, Contract, PendingConsignment, Transfer, UncheckedConsignment,
