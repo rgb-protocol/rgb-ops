@@ -811,8 +811,8 @@ impl EvmContract {
     BridgeLocation::Evm(strict_dumb!())
 })]
 pub enum BridgeLocation {
-    /// A bridge smart contract deployed on an EVM-compatible chain. External-anchor resolvers
-    /// must check its chain ID against the chain they are connected to.
+    /// A bridge smart contract deployed on an EVM-compatible chain. Claim resolvers must
+    /// check its chain ID against the chain they are connected to.
     Evm(EvmContract),
 }
 

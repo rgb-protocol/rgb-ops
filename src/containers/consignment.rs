@@ -33,8 +33,8 @@ use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use rgb::bitcoin::Transaction as Tx;
 use rgb::commit_verify::{CommitEncode, CommitEngine, CommitId, CommitmentId, DigestExt, Sha256};
 use rgb::validation::{
-    EAnchor, ExternalAnchor, Failure, PendingValidation, ResolveWitness, SchemaRules,
-    ValidationConfig, ValidationError, Validator,
+    Claim, EAnchor, Failure, PendingValidation, ResolveWitness, SchemaRules, ValidationConfig,
+    ValidationError, Validator,
 };
 use rgb::vm::OrdOpRef;
 use rgb::{
@@ -51,9 +51,7 @@ use super::{
     ASCII_ARMOR_SCHEMA, ASCII_ARMOR_VERSION,
 };
 use crate::containers::anchors::SpvProof;
-use crate::containers::external_anchors::{
-    AnchorResolverError, CheckedAnchorResolver, ResolveAnchor,
-};
+use crate::containers::claim::{CheckedClaimResolver, ClaimResolverError, ResolveClaim};
 use crate::contract::{ContractData, FilteredContractState, UnfilteredContractState};
 use crate::info::ContractInfo;
 use crate::stl::BridgeLocation;
@@ -149,40 +147,40 @@ impl<const TRANSFER: bool> PendingConsignment<TRANSFER> {
     /// data) a caller may want to inspect before discharging them.
     pub fn pending(&mut self) -> &mut PendingValidation { &mut self.pending }
 
-    /// Confirms `anchor` through a resolver checked by [`CheckedAnchorResolver::with`].
+    /// Confirms `claim` through a resolver checked by [`CheckedClaimResolver::with`].
     ///
     /// As with witnesses, an answer obtained elsewhere can still be fed straight to
-    /// [`PendingValidation::resolve_anchor`]; what this guarantees is that a resolver asked
+    /// [`PendingValidation::resolve_claim`]; what this guarantees is that a resolver asked
     /// from here is on the right chain.
-    pub fn resolve_anchor<R: ResolveAnchor>(
+    pub fn resolve_claim<R: ResolveClaim>(
         &mut self,
-        resolver: &CheckedAnchorResolver<R>,
-        anchor: &ExternalAnchor,
-    ) -> Result<(), AnchorResolverError> {
-        if !resolver.is_confirmed(anchor)? {
-            let ExternalAnchor::MintEvent { opid, .. } = anchor;
-            return Err(AnchorResolverError::Unconfirmed(*opid));
+        resolver: &CheckedClaimResolver<R>,
+        claim: &Claim,
+    ) -> Result<(), ClaimResolverError> {
+        if !resolver.is_confirmed(claim)? {
+            let Claim::Lock { opid, .. } = claim;
+            return Err(ClaimResolverError::Unconfirmed(*opid));
         }
-        Ok(self.pending.resolve_anchor(anchor)?)
+        Ok(self.pending.resolve_claim(claim)?)
     }
 
-    /// Checks `resolver` against `location` and confirms every outstanding anchor through it.
+    /// Checks `resolver` against `location` and confirms every outstanding claim through it.
     ///
     /// Where the contract commits to its bridge location is up to the schema, so it is the
     /// caller who has to extract it.
-    pub fn resolve_all_anchors<R: ResolveAnchor>(
+    pub fn resolve_all_claims<R: ResolveClaim>(
         &mut self,
         location: BridgeLocation,
         resolver: &R,
-    ) -> Result<(), AnchorResolverError> {
-        let resolver = CheckedAnchorResolver::with(resolver, location)?;
-        let anchors = self
+    ) -> Result<(), ClaimResolverError> {
+        let resolver = CheckedClaimResolver::with(resolver, location)?;
+        let claims = self
             .pending
-            .unresolved_anchors()
+            .unresolved_claims()
             .cloned()
             .collect::<Vec<_>>();
-        for anchor in &anchors {
-            self.resolve_anchor(&resolver, anchor)?;
+        for claim in &claims {
+            self.resolve_claim(&resolver, claim)?;
         }
         Ok(())
     }
@@ -191,7 +189,7 @@ impl<const TRANSFER: bool> PendingConsignment<TRANSFER> {
     ///
     /// # Panics
     ///
-    /// If any witness or external anchor is still unresolved, see
+    /// If any witness or claim is still unresolved, see
     /// [`PendingValidation::is_resolved`].
     pub fn finalize(self) -> ValidConsignment<TRANSFER> {
         ValidConsignment {
@@ -552,8 +550,8 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     /// Phase 1: validates everything that only depends on the consignment file itself.
     ///
     /// Returns a [`PendingConsignment`] listing what must still be resolved (witnesses and
-    /// external anchors) before the consignment can be considered valid. The caller drives those
-    /// through [`PendingConsignment::pending`] and [`PendingConsignment::resolve_all_anchors`], and
+    /// claims) before the consignment can be considered valid. The caller drives those
+    /// through [`PendingConsignment::pending`] and [`PendingConsignment::resolve_all_claims`], and
     /// then calls [`PendingConsignment::finalize`].
     pub fn validate_deterministic(
         self,
@@ -588,8 +586,8 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     /// Validates the consignment against caller-supplied [`SchemaRules`].
     ///
     /// Runs [`Self::validate_deterministic`] and resolves every witness sequentially against
-    /// `resolver`. Fails with [`ValidationError::ExternalAnchorsPending`] if the schema requires
-    /// external anchors to be confirmed: those cannot be resolved by a chain resolver, so such
+    /// `resolver`. Fails with [`ValidationError::PendingClaims`] if the schema requires
+    /// claims to be confirmed: those cannot be resolved by a chain resolver, so such
     /// consignments must go through [`Self::validate_deterministic`] instead.
     pub fn validate(
         self,
@@ -599,9 +597,9 @@ impl<const TRANSFER: bool> Consignment<TRANSFER> {
     ) -> Result<ValidConsignment<TRANSFER>, ValidationError> {
         let mut pending = self.validate_deterministic(rules, validation_config)?;
         pending.pending().resolve_all(resolver)?;
-        let anchors = pending.pending().unresolved_anchors().count();
-        if anchors > 0 {
-            return Err(ValidationError::ExternalAnchorsPending(anchors));
+        let claims = pending.pending().unresolved_claims().count();
+        if claims > 0 {
+            return Err(ValidationError::PendingClaims(claims));
         }
         Ok(pending.finalize())
     }

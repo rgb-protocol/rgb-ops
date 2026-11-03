@@ -16,26 +16,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Resolution of [`ExternalAnchor`]s against the chain the bridge lives on.
+//! Resolution of [`Claim`]s against the bridge they refer to.
 //!
-//! Consensus knows nothing about that chain, so it can only take the caller's word that an
-//! anchor was confirmed. The contract however commits to a [`BridgeLocation`], which is what
-//! makes it possible to check here that the resolver giving that word is connected to the right
-//! chain. Where that commitment lives is defined by the schema, so extracting it is left to the
-//! caller.
+//! Consensus knows nothing about the chain the bridge lives on, so it can only take the caller's
+//! word that a claim was confirmed. The contract however commits to a [`BridgeLocation`], which is
+//! what makes it possible to check here that the resolver giving that word is connected to the
+//! right chain. Where that commitment lives is defined by the schema, so extracting it is left to
+//! the caller.
 
-use rgb::validation::{ExternalAnchor, ValidationError};
+use rgb::validation::{Claim, ValidationError};
 use rgb::OpId;
 
 use crate::stl::{BridgeLocation, EvmContract};
 
-/// Error resolving an external anchor.
+/// Error resolving a claim.
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]
 #[display(doc_comments)]
-pub enum AnchorResolverError {
+pub enum ClaimResolverError {
     /// resolver is for chain ID {actual}, while the bridge lives on chain ID {expected}
     WrongChainId { expected: u64, actual: u64 },
-    /// external anchor of operation {0} is not confirmed at the bridge location
+    /// claim of operation {0} is not confirmed by the bridge
     Unconfirmed(OpId),
     /// unable to retrieve information from the resolver, {0}
     ResolverIssue(String),
@@ -44,56 +44,58 @@ pub enum AnchorResolverError {
     Validation(ValidationError),
 }
 
-/// Trait to confirm [`ExternalAnchor`]s on the chain a bridge lives on.
-pub trait ResolveAnchor {
+/// Trait to confirm [`Claim`]s on the chain a bridge lives on.
+pub trait ResolveClaim {
     /// EIP-155 chain ID of the EVM chain this resolver is connected to, as the node itself
     /// reports it (`eth_chainId`) rather than as configured.
-    fn evm_chain_id(&self) -> Result<u64, AnchorResolverError>;
+    fn evm_chain_id(&self) -> Result<u64, ClaimResolverError>;
 
-    /// Whether `anchor` is confirmed by the bridge contract at `location`.
+    /// Whether the bridge at `location` holds the lock `claim` refers to.
+    ///
+    /// The bridge must hold a lock for the claim's `opid`, of exactly the claim's `amount`, and
+    /// recorded before block `before_block`. Every field of the claim must match, otherwise
+    /// bridge guarantees may break.
     fn is_confirmed(
         &self,
         location: &BridgeLocation,
-        anchor: &ExternalAnchor,
-    ) -> Result<bool, AnchorResolverError>;
+        claim: &Claim,
+    ) -> Result<bool, ClaimResolverError>;
 }
 
-impl<T: ResolveAnchor> ResolveAnchor for &T {
-    fn evm_chain_id(&self) -> Result<u64, AnchorResolverError> {
-        ResolveAnchor::evm_chain_id(*self)
-    }
+impl<T: ResolveClaim> ResolveClaim for &T {
+    fn evm_chain_id(&self) -> Result<u64, ClaimResolverError> { ResolveClaim::evm_chain_id(*self) }
 
     fn is_confirmed(
         &self,
         location: &BridgeLocation,
-        anchor: &ExternalAnchor,
-    ) -> Result<bool, AnchorResolverError> {
-        ResolveAnchor::is_confirmed(*self, location, anchor)
+        claim: &Claim,
+    ) -> Result<bool, ClaimResolverError> {
+        ResolveClaim::is_confirmed(*self, location, claim)
     }
 }
 
 /// A resolver checked against the [`BridgeLocation`] the contract commits to.
 ///
-/// Only [`Self::with`] hands one out, so an anchor cannot be looked up on a resolver nobody
+/// Only [`Self::with`] hands one out, so a claim cannot be checked on a resolver nobody
 /// checked.
-pub struct CheckedAnchorResolver<R: ResolveAnchor> {
+pub struct CheckedClaimResolver<R: ResolveClaim> {
     inner: R,
     location: BridgeLocation,
 }
 
-impl<R: ResolveAnchor> CheckedAnchorResolver<R> {
+impl<R: ResolveClaim> CheckedClaimResolver<R> {
     /// Checks that `inner` is connected to the chain the bridge at `location` lives on.
     ///
-    /// The counterpart of [`PendingValidation::check_resolver`] for external anchors: a network
+    /// The counterpart of [`PendingValidation::check_resolver`] for claims: a network
     /// round-trip on real nodes, so call it once per resolver.
     ///
     /// [`PendingValidation::check_resolver`]: rgb::validation::PendingValidation::check_resolver
-    pub fn with(inner: R, location: BridgeLocation) -> Result<Self, AnchorResolverError> {
+    pub fn with(inner: R, location: BridgeLocation) -> Result<Self, ClaimResolverError> {
         match location {
             BridgeLocation::Evm(EvmContract { chain_id, .. }) => {
                 let actual = inner.evm_chain_id()?;
                 if actual != chain_id {
-                    return Err(AnchorResolverError::WrongChainId {
+                    return Err(ClaimResolverError::WrongChainId {
                         expected: chain_id,
                         actual,
                     });
@@ -106,9 +108,9 @@ impl<R: ResolveAnchor> CheckedAnchorResolver<R> {
     /// The bridge location the resolver was checked against.
     pub fn location(&self) -> &BridgeLocation { &self.location }
 
-    /// Asks the resolver whether `anchor` is confirmed at the checked location.
-    pub fn is_confirmed(&self, anchor: &ExternalAnchor) -> Result<bool, AnchorResolverError> {
-        self.inner.is_confirmed(&self.location, anchor)
+    /// Asks the resolver whether `claim` is confirmed at the checked location.
+    pub fn is_confirmed(&self, claim: &Claim) -> Result<bool, ClaimResolverError> {
+        self.inner.is_confirmed(&self.location, claim)
     }
 }
 
@@ -119,14 +121,14 @@ mod test {
 
     struct Resolver(u64);
 
-    impl ResolveAnchor for Resolver {
-        fn evm_chain_id(&self) -> Result<u64, AnchorResolverError> { Ok(self.0) }
+    impl ResolveClaim for Resolver {
+        fn evm_chain_id(&self) -> Result<u64, ClaimResolverError> { Ok(self.0) }
 
         fn is_confirmed(
             &self,
             _location: &BridgeLocation,
-            _anchor: &ExternalAnchor,
-        ) -> Result<bool, AnchorResolverError> {
+            _claim: &Claim,
+        ) -> Result<bool, ClaimResolverError> {
             Ok(true)
         }
     }
@@ -140,10 +142,10 @@ mod test {
 
     #[test]
     fn resolver_chain_id_is_checked() {
-        assert!(CheckedAnchorResolver::with(&Resolver(1), location(1)).is_ok());
+        assert!(CheckedClaimResolver::with(&Resolver(1), location(1)).is_ok());
         assert_eq!(
-            CheckedAnchorResolver::with(&Resolver(137), location(1)).err(),
-            Some(AnchorResolverError::WrongChainId {
+            CheckedClaimResolver::with(&Resolver(137), location(1)).err(),
+            Some(ClaimResolverError::WrongChainId {
                 expected: 1,
                 actual: 137
             })
