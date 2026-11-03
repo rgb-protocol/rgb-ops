@@ -129,6 +129,13 @@ pub trait ResolveClaim {
     /// The bridge must hold a lock for the claim's [`LockId`], which commits to its `opid` and
     /// `witness_id`, of exactly the claim's `amount`, and recorded before block `before_block`.
     /// Every field of the claim must match, otherwise bridge guarantees may break.
+    ///
+    /// How deep in the bridge's chain the lock must be to count as confirmed is up to the
+    /// implementation, just as the finality of witnesses is up to a [`ResolveWitness`]: the right
+    /// depth depends on the chain and on the risk the caller is willing to take. A lock that is
+    /// not deep enough yet should be reported as not confirmed rather than as an error.
+    ///
+    /// [`ResolveWitness`]: rgb::validation::ResolveWitness
     fn is_confirmed(
         &self,
         location: &BridgeLocation,
