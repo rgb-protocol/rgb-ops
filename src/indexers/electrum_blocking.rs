@@ -167,17 +167,22 @@ impl ResolveWitness for ElectrumClient {
         let txid = if let Some(txid) = txid {
             txid.to_string()
         } else {
-            self.inner
+            let res = self
+                .inner
                 .raw_call("blockchain.transaction.id_from_pos", vec![
                     Param::Usize(1),
                     Param::Usize(0),
                     Param::Bool(false),
                 ])
-                .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?
-                .get("tx_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .map_err(|e| WitnessResolverError::ResolverIssue(None, e.to_string()))?;
+            // electrs 0.12 and later answer with the plain transaction hash, as the Electrum
+            // protocol specifies, while 0.11.1 wraps it in an object under "tx_hash" and
+            // earlier versions under "tx_id"
+            res.as_str()
+                .or_else(|| res.get("tx_hash").and_then(|v| v.as_str()))
+                .or_else(|| res.get("tx_id").and_then(|v| v.as_str()))
                 .ok_or(WitnessResolverError::InvalidResolverData)?
+                .to_string()
         };
         // check the transaction can be fetched before probing verbose support
         if let Err(e) = self.inner.raw_call("blockchain.transaction.get", vec![
