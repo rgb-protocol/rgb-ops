@@ -280,12 +280,13 @@ mod tests {
         }
     }
 
-    /// Spawns an Electrum server answering the requests `resolve_witness` makes with the given
-    /// tip height and verbose transaction record.
-    fn mock_client(tip_height: u32, tx_details: String) -> ElectrumClient {
+    /// Spawns an Electrum server answering each request with the JSON result `responder` returns
+    /// for it, `server.version` aside.
+    fn mock_client(
+        responder: impl Fn(&str, &serde_json::Value) -> String + Send + 'static,
+    ) -> ElectrumClient {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Electrum server");
         let address = listener.local_addr().expect("read mock server address");
-        let header = consensus::encode::serialize_hex(&genesis_block(Network::Regtest).header);
         thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept Electrum connection");
             let mut writer = stream.try_clone().expect("clone Electrum stream");
@@ -293,13 +294,10 @@ mod tests {
                 let Ok(line) = line else { break };
                 let request: serde_json::Value =
                     serde_json::from_str(&line).expect("Electrum request is JSON");
-                let result = match request["method"].as_str().expect("request method") {
+                let method = request["method"].as_str().expect("request method");
+                let result = match method {
                     "server.version" => s!(r#"["mock", "1.4"]"#),
-                    "blockchain.headers.subscribe" => {
-                        format!(r#"{{"height":{tip_height},"hex":"{header}"}}"#)
-                    }
-                    "blockchain.transaction.get" => tx_details.clone(),
-                    method => panic!("unexpected Electrum request {method}"),
+                    method => responder(method, &request),
                 };
                 writeln!(writer, r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#, request["id"])
                     .expect("write mock Electrum response");
@@ -310,6 +308,44 @@ mod tests {
         }
     }
 
+    /// Spawns an Electrum server answering the requests `resolve_witness` makes with the given
+    /// tip height and verbose transaction record.
+    fn mock_witness_client(tip_height: u32, tx_details: String) -> ElectrumClient {
+        let header = consensus::encode::serialize_hex(&genesis_block(Network::Regtest).header);
+        mock_client(move |method, _| match method {
+            "blockchain.headers.subscribe" => {
+                format!(r#"{{"height":{tip_height},"hex":"{header}"}}"#)
+            }
+            "blockchain.transaction.get" => tx_details.clone(),
+            method => panic!("unexpected Electrum request {method}"),
+        })
+    }
+
+    /// The transaction `check_chain_net` asks a custom signet service for, the first one of
+    /// block 1, since no well-known transaction exists on a custom chain.
+    const TXID_AT_POS: &str = "8c06961a8af31824f880b600d1cd5d1690b33508e4f4922d5505f185859cf48d";
+
+    /// Spawns an Electrum server for a custom signet chain, answering
+    /// `blockchain.transaction.id_from_pos` with `id_from_pos` and requiring every transaction
+    /// lookup to use the hash it carries.
+    fn mock_signet_custom_client(id_from_pos: String) -> ElectrumClient {
+        let header = consensus::encode::serialize_hex(&genesis_block(Network::Signet).header);
+        mock_client(move |method, request| match method {
+            "blockchain.block.header" => format!(r#""{header}""#),
+            "blockchain.transaction.id_from_pos" => id_from_pos.clone(),
+            "blockchain.transaction.get" => {
+                assert_eq!(
+                    request["params"][0].as_str(),
+                    Some(TXID_AT_POS),
+                    "the transaction hash must be the one id_from_pos answered with"
+                );
+                // check_chain_net only cares whether the lookup succeeds
+                s!(r#""00""#)
+            }
+            method => panic!("unexpected Electrum request {method}"),
+        })
+    }
+
     #[test]
     fn rejects_more_confirmations_than_tip_height() {
         let tx = dumb_tx();
@@ -318,11 +354,53 @@ mod tests {
             r#"{{"hex":"{}","confirmations":200,"blocktime":1231006505}}"#,
             consensus::encode::serialize_hex(&tx)
         );
-        let client = mock_client(100, tx_details);
+        let client = mock_witness_client(100, tx_details);
 
         let error = client
             .resolve_witness(txid)
             .expect_err("reject confirmations above the tip height");
+
+        assert_eq!(error, WitnessResolverError::InvalidResolverData);
+    }
+
+    /// electrs 0.12 and later answer with the plain transaction hash the Electrum protocol
+    /// specifies, as do other spec-compliant services.
+    #[test]
+    fn accepts_plain_id_from_pos() {
+        let client = mock_signet_custom_client(format!(r#""{TXID_AT_POS}""#));
+
+        client
+            .check_chain_net(ChainNet::BitcoinSignetCustom)
+            .expect("accept a plain transaction hash");
+    }
+
+    /// electrs 0.11.1 wraps the hash in an object, under "tx_hash".
+    #[test]
+    fn accepts_tx_hash_id_from_pos() {
+        let client = mock_signet_custom_client(format!(r#"{{"tx_hash":"{TXID_AT_POS}"}}"#));
+
+        client
+            .check_chain_net(ChainNet::BitcoinSignetCustom)
+            .expect("accept a hash wrapped as tx_hash");
+    }
+
+    /// electrs up to 0.11.0 wraps the hash in an object, under "tx_id".
+    #[test]
+    fn accepts_tx_id_id_from_pos() {
+        let client = mock_signet_custom_client(format!(r#"{{"tx_id":"{TXID_AT_POS}"}}"#));
+
+        client
+            .check_chain_net(ChainNet::BitcoinSignetCustom)
+            .expect("accept a hash wrapped as tx_id");
+    }
+
+    #[test]
+    fn rejects_id_from_pos_without_a_hash() {
+        let client = mock_signet_custom_client(s!(r#"{"unexpected":0}"#));
+
+        let error = client
+            .check_chain_net(ChainNet::BitcoinSignetCustom)
+            .expect_err("reject a response carrying no transaction hash");
 
         assert_eq!(error, WitnessResolverError::InvalidResolverData);
     }
